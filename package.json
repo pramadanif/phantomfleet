@@ -12,6 +12,8 @@
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
+    "@stellar/freighter-api": "^6.0.1",
+    "@stellar/stellar-sdk": "^14.5.0",
     "@tailwindcss/postcss": "^4.2.0",
     "@tailwindcss/vite": "^4.1.14",
     "better-sqlite3": "^12.4.1",
