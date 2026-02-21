@@ -1,0 +1,32 @@
+@import url('https://fonts.googleapis.com/css2?family=Special+Elite&family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-abyss: #0D1519;
+  --color-hull: #1A2830;
+  --color-ocean-gray: #3D4F5C;
+  --color-haze-gray: #6B7B8D;
+  --color-mist-blue: #4A6B7C;
+  --color-smoke: #8DA0AC;
+  --color-deck-green: #2C3E2D;
+  --color-brass: #B8962E;
+  --color-chalk: #E8DFC8;
+  --color-signal-red: #C0392B;
+  --color-rust: #5C3317;
+  --color-radar: #3DFF6E;
+
+  --font-display: "Special Elite", system-ui, sans-serif;
+  --font-sans: "Rajdhani", system-ui, sans-serif;
+  --font-mono: "Share Tech Mono", monospace;
+}
+
+* {
+  cursor: crosshair !important;
+}
+
+body {
+  background-color: var(--color-abyss);
+  color: var(--color-smoke);
+  font-family: var(--font-sans);
+  overflow-x: hidden;
+}
