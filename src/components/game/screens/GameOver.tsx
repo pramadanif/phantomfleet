@@ -4,26 +4,33 @@ import { motion } from 'motion/react';
 import { useGame } from '../GameContext';
 import { callEndGame, EXPLORER_BASE } from '../../../utils/stellar';
 import { useState, useEffect } from 'react';
+import { soundEngine } from '../../../utils/soundEngine';
 
 export function GameOver() {
-    const { didWin, setScreen, setGameId, wallet, gameId, setLastTx } = useGame();
+    const { didWin, setScreen, setGameId, wallet, gameId, setLastTx, shotsFired, playerHits, isBotGame } = useGame();
     const [endGameTx, setEndGameTx] = useState<string | null>(null);
 
     const resultText = didWin ? "VICTORY" : "DEFEATED";
     const subText = didWin
-        ? "Enemy fleet eliminated. All proofs verified."
+        ? "Enemy fleet eliminated. All proofs verified on Stellar."
         : "Your fleet has been eliminated.";
     const accentColor = didWin ? "text-brass" : "text-haze-gray";
 
-    // Mock stats (in production these come from game state)
-    const shots = Math.floor(Math.random() * 20) + 15;
-    const hits = didWin ? 10 : Math.floor(Math.random() * 9);
+    // Real stats from game state
+    const shots = shotsFired || 1;
+    const hits = playerHits;
     const accuracy = Math.round((hits / shots) * 100);
     const proofSize = (shots * 0.256).toFixed(2);
-    const proofsGenerated = shots;
 
-    // Call end_game on mount
+    // Play victory/defeat sound
     useEffect(() => {
+        soundEngine.stopMusic();
+        soundEngine.play(didWin ? 'victory' : 'defeat');
+    }, [didWin]);
+
+    // Call end_game on mount (skip for bot games)
+    useEffect(() => {
+        if (isBotGame) return;
         async function endGame() {
             try {
                 const result = await callEndGame(wallet?.address || '', gameId || '');
@@ -34,11 +41,12 @@ export function GameOver() {
             }
         }
         endGame();
-    }, [wallet, gameId, setLastTx]);
+    }, [wallet, gameId, setLastTx, isBotGame]);
 
     const handlePlayAgain = () => {
         setGameId(null);
         setScreen('LOBBY');
+        soundEngine.play('ui_click');
     };
 
     return (
@@ -96,7 +104,7 @@ export function GameOver() {
                     </div>
                     <div className="flex flex-col items-center p-4 bg-hull border border-ocean-gray">
                         <span className="text-haze-gray mb-2">PROOFS</span>
-                        <span className="text-smoke text-xl">{proofsGenerated} · {proofSize}KB</span>
+                        <span className="text-smoke text-xl">{shots} · {proofSize}KB</span>
                     </div>
                 </div>
 
@@ -104,7 +112,7 @@ export function GameOver() {
                 <div className="flex flex-col items-center gap-8">
                     <div className="font-mono text-radar text-sm tracking-widest flex items-center gap-2 px-6 py-2 border border-radar/50 bg-radar/10">
                         <motion.div animate={{ opacity: [1, 0.3, 1] }} transition={{ duration: 1.2, repeat: Infinity }} className="w-2 h-2 rounded-full bg-radar" />
-                        GAME SEALED ON STELLAR
+                        {isBotGame ? 'GAME COMPLETED LOCALLY' : 'GAME SEALED ON STELLAR'}
                     </div>
 
                     {endGameTx && (

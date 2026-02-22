@@ -7,13 +7,20 @@ import { useGame } from '../GameContext';
 import { callStartGame, EXPLORER_BASE } from '../../../utils/stellar';
 
 export function GameLobby() {
-    const { wallet, account, setScreen, setGameId, gameId, setGlobalError } = useGame();
+    const { wallet, account, setScreen, setGameId, gameId, setGlobalError, setIsBotGame } = useGame();
     const [createdGameId, setCreatedGameId] = useState<string | null>(null);
     const [joinInput, setJoinInput] = useState('');
     const [isDeploying, setIsDeploying] = useState(false);
     const [deployTx, setDeployTx] = useState<string | null>(null);
 
     const walletAddress = wallet?.address || '';
+
+    const handlePlayVsBot = () => {
+        const botGameId = 'BOT-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+        setGameId(botGameId);
+        setIsBotGame(true);
+        setScreen('PLACEMENT');
+    };
 
     const handleCreateGame = async () => {
         setIsDeploying(true);
@@ -33,6 +40,7 @@ export function GameLobby() {
         e.preventDefault();
         if (joinInput.trim()) {
             setGameId(joinInput.trim());
+            setIsBotGame(false);
             setScreen('PLACEMENT');
         }
     };
@@ -40,6 +48,7 @@ export function GameLobby() {
     const handleEnterLobby = () => {
         if (createdGameId) {
             setGameId(createdGameId);
+            setIsBotGame(false);
             setScreen('PLACEMENT');
         }
     };
@@ -49,6 +58,35 @@ export function GameLobby() {
             <NavBar />
 
             <div className="max-w-6xl mx-auto w-full px-6 flex-1 flex flex-col pt-12">
+
+                {/* PLAY VS BOT — Hero Feature */}
+                <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="mb-12"
+                >
+                    <div className="bg-hull border-2 border-brass p-8 flex flex-col md:flex-row items-center justify-between gap-6"
+                        style={{ boxShadow: '0 0 40px rgba(184,150,46,0.15), inset 0 0 40px rgba(184,150,46,0.05)' }}>
+                        <div>
+                            <h2 className="font-display text-brass text-3xl tracking-widest mb-2">INSTANT BATTLE</h2>
+                            <p className="font-mono text-smoke text-sm leading-relaxed max-w-xl">
+                                Play against the <span className="text-brass font-bold">Phantom AI</span> — no opponent needed.<br />
+                                Full ZK proof generation. On-chain verification. Immediate gameplay.
+                            </p>
+                            <p className="font-mono text-haze-gray text-xs mt-2">
+                                Bot fleet is committed on-chain with the same Poseidon commitment as human players.
+                            </p>
+                        </div>
+                        <button
+                            onClick={handlePlayVsBot}
+                            className="bg-brass text-abyss font-sans font-bold text-xl tracking-wider py-5 px-12 hover:brightness-110 transition-all whitespace-nowrap"
+                            style={{ boxShadow: '0 4px 16px rgba(184,150,46,0.3)' }}
+                        >
+                            ⚡ PLAY VS BOT
+                        </button>
+                    </div>
+                </motion.div>
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-12 lg:gap-24 flex-1">
 
                     {/* CREATE GAME PANEL */}
@@ -128,7 +166,7 @@ export function GameLobby() {
                     </div>
                 </div>
 
-                {/* ACTIVE GAMES LIST MOCK */}
+                {/* ACTIVE PUBLIC MATCHES */}
                 <div className="mt-16 w-full">
                     <h3 className="font-mono text-haze-gray text-xs mb-4 tracking-widest">ACTIVE PUBLIC MATCHES</h3>
                     <div className="flex flex-col gap-2">

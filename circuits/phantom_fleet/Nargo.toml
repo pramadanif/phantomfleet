@@ -1,0 +1,7 @@
+[package]
+name = "phantom_fleet"
+type = "bin"
+authors = ["Phantom Fleet Team"]
+compiler_version = ">=1.0.0"
+
+[dependencies]

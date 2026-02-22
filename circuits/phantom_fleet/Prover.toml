@@ -1,0 +1,60 @@
+# Test witness for Phantom Fleet ZK circuit
+# Scenario: Shot at C4 (x=3, y=2), miss
+# Layout: Ship at cells (0,0), (1,0), (2,0), (3,0) [CARRIER]
+#         Ship at (0,1), (1,1), (2,1)              [CRUISER]
+#         Ship at (4,2), (5,2)                       [DESTROYER]
+#         Ship at (0,4)                               [SCOUT]
+#         Ship at (5,5)                               [SCOUT]
+
+# PRIVATE INPUTS
+
+# Flattened 6×6 grid (row-major)
+# Row 0: 1 1 1 1 0 0   (Carrier at x=0..3)
+# Row 1: 1 1 1 0 0 0   (Cruiser at x=0..2)
+# Row 2: 0 0 0 0 1 1   (Destroyer at x=4..5)
+# Row 3: 0 0 0 0 0 0
+# Row 4: 1 0 0 0 0 0   (Scout at x=0)
+# Row 5: 0 0 0 0 0 1   (Scout at x=5)
+ship_grid = [
+    "1", "1", "1", "1", "0", "0",
+    "1", "1", "1", "0", "0", "0",
+    "0", "0", "0", "0", "1", "1",
+    "0", "0", "0", "0", "0", "0",
+    "1", "0", "0", "0", "0", "0",
+    "0", "0", "0", "0", "0", "1"
+]
+
+# Merkle path for closest ship cell (6 levels for 36-leaf tree)
+# Using placeholder hashes — real values computed by SDK
+merkle_path = [
+    ["0x0000000000000000000000000000000000000000000000000000000000000001", "0"],
+    ["0x0000000000000000000000000000000000000000000000000000000000000002", "1"],
+    ["0x0000000000000000000000000000000000000000000000000000000000000003", "0"],
+    ["0x0000000000000000000000000000000000000000000000000000000000000004", "1"],
+    ["0x0000000000000000000000000000000000000000000000000000000000000005", "0"],
+    ["0x0000000000000000000000000000000000000000000000000000000000000006", "1"]
+]
+
+# Closest ship to target (3,2) is at (4,2) — the Destroyer
+closest_ship_x = "4"
+closest_ship_y = "2"
+
+# Random nonce used when committing layout
+layout_nonce = "0x00000000000000000000000000000000000000000000000000000000deadbeef"
+
+# PUBLIC INPUTS
+
+# Shot target: C4 in battleship notation = (3, 2) in 0-indexed coords
+target_x = "3"
+target_y = "2"
+
+# Layout commitment (Poseidon hash computed from grid + nonce)
+# In real use, this is computed by the SDK and stored on-chain
+layout_commitment = "0x0000000000000000000000000000000000000000000000000000000000000000"
+
+# Chebyshev distance from (3,2) to closest ship at (4,2) = max(|3-4|,|2-2|) = 1
+min_dist = "1"
+max_dist = "1"
+
+# Miss (no ship at (3,2))
+is_hit = "0"

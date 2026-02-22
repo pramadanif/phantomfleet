@@ -5,6 +5,7 @@ import { motion } from 'motion/react';
 import { useGame } from '../GameContext';
 import { buildMerkleTree, computeCommitment } from '../../../utils/zkProof';
 import { callCommitLayout, EXPLORER_BASE } from '../../../utils/stellar';
+import { soundEngine } from '../../../utils/soundEngine';
 
 type ShipType = 'CARRIER' | 'CRUISER' | 'DESTROYER' | 'SCOUT';
 type Orientation = 'HORIZONTAL' | 'VERTICAL';
@@ -21,7 +22,6 @@ const INVENTORY: ShipInfo[] = [
     { id: 'D1', type: 'DESTROYER', size: 2 },
     { id: 'S1', type: 'SCOUT', size: 1 },
     { id: 'S2', type: 'SCOUT', size: 1 },
-    { id: 'S3', type: 'SCOUT', size: 1 },
 ];
 
 export function ShipPlacement() {
@@ -75,6 +75,7 @@ export function ShipPlacement() {
         if (!selectedShip || hoverCells.length === 0) return;
         const shipInfo = INVENTORY.find(s => s.id === selectedShip)!;
         setPlacedShips(prev => ({ ...prev, [selectedShip]: { cells: hoverCells, type: shipInfo.type } }));
+        soundEngine.play('ship_place');
         setSelectedShip(null);
         setHoverCells([]);
     };
@@ -90,6 +91,7 @@ export function ShipPlacement() {
 
             // 2. Build Merkle tree
             setSealStatus('BUILDING MERKLE TREE...');
+            soundEngine.play('proof_generating');
             const { tree, nonce } = await buildMerkleTree(grid);
 
             // 3. Compute Poseidon commitment

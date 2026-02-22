@@ -33,6 +33,16 @@ export interface GameContextType {
     lastTx: TxResult | null;
     setLastTx: (tx: TxResult | null) => void;
 
+    // Bot mode
+    isBotGame: boolean;
+    setIsBotGame: (b: boolean) => void;
+
+    // Stats tracking
+    shotsFired: number;
+    setShotsFired: (n: number) => void;
+    playerHits: number;
+    setPlayerHits: (n: number) => void;
+
     // Error handling
     globalError: string | null;
     setGlobalError: (e: string | null) => void;
@@ -60,6 +70,13 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
 
     // Transaction tracking
     const [lastTx, setLastTx] = useState<TxResult | null>(null);
+
+    // Bot mode
+    const [isBotGame, setIsBotGame] = useState(false);
+
+    // Stats
+    const [shotsFired, setShotsFired] = useState(0);
+    const [playerHits, setPlayerHits] = useState(0);
 
     // Error handling
     const [globalError, setGlobalError] = useState<string | null>(null);
@@ -135,6 +152,12 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
         setLayoutNonce,
         lastTx,
         setLastTx,
+        isBotGame,
+        setIsBotGame,
+        shotsFired,
+        setShotsFired,
+        playerHits,
+        setPlayerHits,
         globalError,
         setGlobalError,
     };

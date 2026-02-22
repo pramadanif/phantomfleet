@@ -2,8 +2,7 @@
  * Stellar/Soroban Integration Utilities for Phantom Fleet
  * 
  * Handles wallet connection, account queries, and all contract
- * calls on the Stellar TESTNET. All transactions are signed
- * via Freighter browser extension.
+ * calls on Stellar TESTNET via Soroban RPC + Freighter signing.
  */
 
 import { isConnected, requestAccess, signTransaction } from '@stellar/freighter-api';
@@ -11,10 +10,18 @@ import * as StellarSdk from '@stellar/stellar-sdk';
 
 // ── Constants ──────────────────────────────────────────────
 
-export const TESTNET_URL = 'https://soroban-testnet.stellar.org';
+export const TESTNET_RPC_URL = 'https://soroban-testnet.stellar.org';
 export const NETWORK_PASSPHRASE = StellarSdk.Networks.TESTNET;
 export const GAME_HUB_CONTRACT = 'CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG';
 export const EXPLORER_BASE = 'https://stellar.expert/explorer/testnet/tx/';
+
+/** PhantomFleet contract address — set after deployment. */
+export let PHANTOM_FLEET_CONTRACT = '';
+
+/** Set the PhantomFleet contract address (called after deployment). */
+export function setContractAddress(addr: string) {
+    PHANTOM_FLEET_CONTRACT = addr;
+}
 
 // ── Wallet ─────────────────────────────────────────────────
 
@@ -22,10 +29,6 @@ export interface WalletInfo {
     address: string;
 }
 
-/**
- * Connect to Freighter wallet. Returns public key address.
- * Throws if Freighter is not installed or user denies access.
- */
 export async function connectWallet(): Promise<WalletInfo> {
     const connected = await isConnected();
     if (!connected) {
@@ -47,9 +50,6 @@ export interface AccountInfo {
     sequence: string;
 }
 
-/**
- * Fetch account info and XLM balance from Stellar TESTNET.
- */
 export async function getAccount(publicKey: string): Promise<AccountInfo> {
     try {
         const server = new StellarSdk.Horizon.Server('https://horizon-testnet.stellar.org');
@@ -65,11 +65,7 @@ export async function getAccount(publicKey: string): Promise<AccountInfo> {
         };
     } catch (err: any) {
         if (err?.response?.status === 404) {
-            return {
-                address: publicKey,
-                balanceXLM: '0',
-                sequence: '0',
-            };
+            return { address: publicKey, balanceXLM: '0', sequence: '0' };
         }
         throw err;
     }
@@ -84,47 +80,103 @@ export interface TxResult {
 }
 
 /**
- * Generic helper to build, sign, and submit a Soroban transaction.
- * In production this would use StellarSdk.Contract and SorobanRpc.
- * Currently mocked for UI development.
+ * Build, simulate, sign (via Freighter), and submit a Soroban transaction.
+ * Uses full Soroban RPC workflow — no mocks.
  */
 async function submitContractCall(
     callerAddress: string,
     contractId: string,
     method: string,
-    args: any[] = []
+    args: StellarSdk.xdr.ScVal[] = []
 ): Promise<TxResult> {
-    // Mock: simulate network delay
-    await new Promise(r => setTimeout(r, 1500 + Math.random() * 1000));
+    const server = new StellarSdk.rpc.Server(TESTNET_RPC_URL);
 
-    // Generate a mock transaction hash
-    const encoder = new TextEncoder();
-    const data = encoder.encode(`${contractId}:${method}:${Date.now()}`);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const txHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('').substring(0, 64);
+    // Load the caller's account for sequence number
+    const account = await server.getAccount(callerAddress);
+
+    // Build the contract invocation
+    const contract = new StellarSdk.Contract(contractId);
+    const operation = contract.call(method, ...args);
+
+    const transaction = new StellarSdk.TransactionBuilder(account, {
+        fee: '100',
+        networkPassphrase: NETWORK_PASSPHRASE,
+    })
+        .addOperation(operation)
+        .setTimeout(30)
+        .build();
+
+    // Simulate to get resource estimates
+    const simulated = await server.simulateTransaction(transaction);
+
+    if (StellarSdk.rpc.Api.isSimulationError(simulated)) {
+        throw new Error(`Simulation failed: ${simulated.error}`);
+    }
+
+    // Assemble with resource estimates
+    const assembled = StellarSdk.rpc.assembleTransaction(
+        transaction,
+        simulated
+    ).build();
+
+    // Sign via Freighter
+    const signResult = await signTransaction(assembled.toXDR(), {
+        networkPassphrase: NETWORK_PASSPHRASE,
+    });
+
+    const signedXdr = typeof signResult === 'string'
+        ? signResult
+        : (signResult as unknown as { signedTxXdr: string }).signedTxXdr;
+
+    const signedTx = StellarSdk.TransactionBuilder.fromXDR(
+        signedXdr,
+        NETWORK_PASSPHRASE
+    ) as StellarSdk.Transaction;
+
+    // Submit
+    const submitResult = await server.sendTransaction(signedTx);
+
+    if (submitResult.status === 'ERROR') {
+        throw new Error('Transaction submission failed');
+    }
+
+    // Wait for confirmation
+    let getResult = await server.getTransaction(submitResult.hash);
+    while (getResult.status === 'NOT_FOUND') {
+        await new Promise(r => setTimeout(r, 1000));
+        getResult = await server.getTransaction(submitResult.hash);
+    }
+
+    if (getResult.status === 'FAILED') {
+        throw new Error('Transaction failed on-chain');
+    }
 
     return {
-        txHash,
-        explorerUrl: `${EXPLORER_BASE}${txHash}`,
-        success: true,
+        txHash: submitResult.hash,
+        explorerUrl: `${EXPLORER_BASE}${submitResult.hash}`,
+        success: getResult.status === 'SUCCESS',
     };
 }
 
 /**
- * Start a new game. Calls start_game() on both the
- * PhantomFleet contract and the Game Hub.
+ * Start a new game. Calls initialize_game() on PhantomFleet contract,
+ * which cross-calls start_game() on the Game Hub.
  */
 export async function callStartGame(
     callerAddress: string,
     player1: string,
     player2?: string
 ): Promise<TxResult & { gameId: string }> {
+    const args = [
+        StellarSdk.nativeToScVal(player1, { type: 'address' }),
+        StellarSdk.nativeToScVal(player2 || callerAddress, { type: 'address' }),
+    ];
+
     const result = await submitContractCall(
         callerAddress,
-        GAME_HUB_CONTRACT,
-        'start_game',
-        [player1, player2 || '']
+        PHANTOM_FLEET_CONTRACT || GAME_HUB_CONTRACT,
+        'initialize_game',
+        args
     );
 
     const gameId = 'GAME-' + result.txHash.substring(0, 8).toUpperCase();
@@ -133,22 +185,37 @@ export async function callStartGame(
 
 /**
  * Commit a fleet layout (Poseidon commitment) on-chain.
+ * Calls commit_layout(game_id, player, commitment) on PhantomFleet contract.
  */
 export async function callCommitLayout(
     callerAddress: string,
     gameId: string,
     commitment: string
 ): Promise<TxResult> {
+    const gameIdBytes = Buffer.alloc(32);
+    Buffer.from(gameId.replace(/^GAME-/, '').padStart(64, '0').slice(0, 64), 'hex').copy(gameIdBytes);
+
+    const commitmentBytes = Buffer.alloc(32);
+    const commitHex = commitment.startsWith('0x') ? commitment.slice(2) : commitment;
+    Buffer.from(commitHex.padStart(64, '0').slice(0, 64), 'hex').copy(commitmentBytes);
+
+    const args = [
+        StellarSdk.xdr.ScVal.scvBytes(gameIdBytes),
+        StellarSdk.nativeToScVal(callerAddress, { type: 'address' }),
+        StellarSdk.xdr.ScVal.scvBytes(commitmentBytes),
+    ];
+
     return submitContractCall(
         callerAddress,
-        GAME_HUB_CONTRACT,
+        PHANTOM_FLEET_CONTRACT || GAME_HUB_CONTRACT,
         'commit_layout',
-        [gameId, commitment]
+        args
     );
 }
 
 /**
  * Submit a shot with its ZK proof and public inputs.
+ * Calls submit_shot(game_id, shooter, target_x, target_y, proof, public_inputs).
  */
 export async function callSubmitShot(
     callerAddress: string,
@@ -158,31 +225,59 @@ export async function callSubmitShot(
     proof: string,
     publicInputs: string[]
 ): Promise<TxResult & { isHit: boolean; distance: number }> {
+    const gameIdBytes = Buffer.alloc(32);
+    Buffer.from(gameId.replace(/^GAME-/, '').padStart(64, '0').slice(0, 64), 'hex').copy(gameIdBytes);
+
+    const proofBytes = Buffer.from(atob(proof), 'binary');
+
+    const pubInputScVals = publicInputs.map(pi => {
+        const hex = pi.startsWith('0x') ? pi.slice(2) : pi;
+        const padded = hex.padStart(64, '0').slice(0, 64);
+        return StellarSdk.xdr.ScVal.scvBytes(Buffer.from(padded, 'hex'));
+    });
+
+    const args = [
+        StellarSdk.xdr.ScVal.scvBytes(gameIdBytes),
+        StellarSdk.nativeToScVal(callerAddress, { type: 'address' }),
+        StellarSdk.nativeToScVal(targetX, { type: 'u32' }),
+        StellarSdk.nativeToScVal(targetY, { type: 'u32' }),
+        StellarSdk.xdr.ScVal.scvBytes(proofBytes),
+        StellarSdk.xdr.ScVal.scvVec(pubInputScVals),
+    ];
+
     const result = await submitContractCall(
         callerAddress,
-        GAME_HUB_CONTRACT,
+        PHANTOM_FLEET_CONTRACT || GAME_HUB_CONTRACT,
         'submit_shot',
-        [gameId, targetX, targetY, proof, publicInputs]
+        args
     );
 
-    // Mock: derive hit/distance from public inputs
-    const isHit = publicInputs[4] === '1';
+    // Parse result from public inputs
+    // Order: [commitment, targetX, targetY, minDist, maxDist, isHit]
+    const isHit = publicInputs[5] === '1';
     const distance = parseInt(publicInputs[3], 10);
 
     return { ...result, isHit, distance };
 }
 
 /**
- * End a game. Calls end_game() on both contracts.
+ * End a game. Calls end_game() on the contract.
  */
 export async function callEndGame(
     callerAddress: string,
     gameId: string
 ): Promise<TxResult> {
+    const gameIdBytes = Buffer.alloc(32);
+    Buffer.from(gameId.replace(/^GAME-/, '').padStart(64, '0').slice(0, 64), 'hex').copy(gameIdBytes);
+
+    const args = [
+        StellarSdk.xdr.ScVal.scvBytes(gameIdBytes),
+    ];
+
     return submitContractCall(
         callerAddress,
-        GAME_HUB_CONTRACT,
+        PHANTOM_FLEET_CONTRACT || GAME_HUB_CONTRACT,
         'end_game',
-        [gameId]
+        args
     );
 }
