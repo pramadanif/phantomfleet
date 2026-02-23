@@ -16,29 +16,11 @@ export function GameLobby() {
 
     const walletAddress = wallet?.address || '';
 
-    const handlePlayVsBot = async () => {
-        if (!BOT_MODE_ENABLED) {
-            setGlobalError('Bot mode is disabled in strict production mode. Use on-chain PvP flow.');
-            return;
-        }
-        if (!walletAddress) {
-            setGlobalError('Connect wallet first.');
-            return;
-        }
-
-        setIsDeploying(true);
-        try {
-            const botGameId = 'BOT-' + Math.random().toString(36).substring(2, 8).toUpperCase();
-            const result = await callStartGame(walletAddress, walletAddress, walletAddress, botGameId);
-            setDeployTx(result.txHash);
-            setGameId(botGameId);
-            setIsBotGame(true);
-            setScreen('PLACEMENT');
-        } catch (err: any) {
-            setGlobalError('Failed to start on-chain bot game: ' + (err.message || 'Unknown error'));
-        } finally {
-            setIsDeploying(false);
-        }
+    const handlePlayTutorial = () => {
+        const localId = 'TUT-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+        setGameId(localId);
+        setIsBotGame(true);
+        setScreen('PLACEMENT');
     };
 
     const handleCreateGame = async () => {
@@ -91,23 +73,22 @@ export function GameLobby() {
                         <div className="bg-hull border-2 border-brass p-8 flex flex-col md:flex-row items-center justify-between gap-6"
                             style={{ boxShadow: '0 0 40px rgba(184,150,46,0.15), inset 0 0 40px rgba(184,150,46,0.05)' }}>
                             <div>
-                                <h2 className="font-display text-brass text-3xl tracking-widest mb-2">INSTANT BATTLE</h2>
+                                <h2 className="font-display text-brass text-3xl tracking-widest mb-2">TUTORIAL MODE</h2>
                                 <p className="font-mono text-smoke text-sm leading-relaxed max-w-xl">
-                                    Play against the <span className="text-brass font-bold">Phantom AI</span> in a real on-chain game.<br />
-                                    Bot moves are signed server-side and resolved on Stellar Testnet.
+                                    Learn the mechanics by playing against <span className="text-brass font-bold">Phantom AI</span> locally.<br />
+                                    No blockchain transactions — practice proximity hunting and fleet strategy.
                                 </p>
                                 <p className="font-mono text-haze-gray text-xs mt-2">
-                                    Uses same `fire_shot` → `resolve_shot` protocol as PvP.
+                                    All game logic runs in your browser. Includes tutorial hints.
                                 </p>
                             </div>
                             <button
                                 type="button"
-                                onClick={handlePlayVsBot}
-                                disabled={isDeploying}
+                                onClick={handlePlayTutorial}
                                 className="bg-brass text-abyss font-sans font-bold text-xl tracking-wider py-5 px-12 hover:brightness-110 transition-all whitespace-nowrap"
                                 style={{ boxShadow: '0 4px 16px rgba(184,150,46,0.3)' }}
                             >
-                                {isDeploying ? 'DEPLOYING...' : 'PLAY VS BOT'}
+                                PLAY TUTORIAL
                             </button>
                         </div>
                     </motion.div>

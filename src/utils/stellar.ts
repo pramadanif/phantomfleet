@@ -632,7 +632,9 @@ export async function callHasRevealedLayout(
             StellarSdk.nativeToScVal(player, { type: 'address' }),
         ]
     );
-    return native === true;
+    // Use loose truthiness — scValToNative might return true, "true", 1, etc.
+    console.log('[stellar] has_revealed_layout raw:', native, typeof native);
+    return !!native;
 }
 
 export async function callGetRevealedLayout(
@@ -651,11 +653,25 @@ export async function callGetRevealedLayout(
         ]
     );
 
-    const gridRaw: number[] = Array.isArray(native.ship_grid ?? native.shipGrid)
-        ? (native.ship_grid ?? native.shipGrid).map((v: any) => Number(v))
+    console.log('[stellar] get_revealed_layout raw native:', JSON.stringify(native, (_k, v) =>
+        v instanceof Uint8Array ? `Uint8Array(${Buffer.from(v).toString('hex').substring(0, 40)})` : v
+    ));
+
+    // Defensive: handle both snake_case and camelCase keys
+    const gridField = native?.ship_grid ?? native?.shipGrid ?? native?.grid ?? [];
+    const gridRaw: number[] = Array.isArray(gridField)
+        ? gridField.map((v: any) => Number(v))
         : [];
-    const nonceBytes: Uint8Array = native.layout_nonce ?? native.layoutNonce ?? new Uint8Array(32);
+
+    const nonceField = native?.layout_nonce ?? native?.layoutNonce ?? native?.nonce;
+    const nonceBytes: Uint8Array = nonceField instanceof Uint8Array
+        ? nonceField
+        : (typeof nonceField === 'string'
+            ? Buffer.from(nonceField.replace(/^0x/, ''), 'hex')
+            : new Uint8Array(32));
     const nonceHex = Buffer.from(nonceBytes).toString('hex');
+
+    console.log('[stellar] parsed grid length:', gridRaw.length, 'ships:', gridRaw.filter(c => c === 1).length, 'nonceHex:', nonceHex.substring(0, 16));
 
     return {
         shipGrid: gridRaw,
@@ -670,7 +686,7 @@ export async function callHasVerificationKey(callerAddress: string): Promise<boo
         'has_verification_key',
         []
     );
-    return native === true;
+    return !!native;
 }
 
 // end_game is NOT exposed as a frontend function.

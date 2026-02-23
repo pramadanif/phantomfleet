@@ -111,6 +111,15 @@ export function ShipPlacement() {
                 ship.cells.forEach(c => { grid[c] = 1; });
             });
 
+            // Local bot mode: skip all on-chain operations
+            if (isBotGame) {
+                setShipGrid(grid);
+                soundEngine.play('proof_complete');
+                setSealStatus('FLEET DEPLOYED — ENTERING TUTORIAL...');
+                setTimeout(() => setScreen('BATTLE'), 800);
+                return;
+            }
+
             // 2. Build Merkle tree (real Poseidon BN254 hashing)
             setSealStatus('BUILDING MERKLE TREE...');
             soundEngine.play('proof_generating');
@@ -206,12 +215,20 @@ export function ShipPlacement() {
                 <div className="text-center mb-12">
                     <h1 className="font-display text-chalk text-4xl md:text-5xl tracking-widest mb-2">DEPLOY YOUR FLEET</h1>
                     <p className="font-sans text-smoke text-lg leading-snug mb-3">
-                        Your layout will be cryptographically sealed.<br />
-                        Your opponent will never see this.
+                        {isBotGame
+                            ? <>Place your ships on the grid. The bot won&apos;t see your layout!</>
+                            : <>Your layout will be cryptographically sealed.<br />Your opponent will never see this.</>}
                     </p>
-                    <p className="font-mono text-haze-gray text-[0.65rem] tracking-wider max-w-lg mx-auto leading-relaxed border-t border-ocean-gray pt-2">
-                        🔒 {CRYPTO_TIP}
-                    </p>
+                    {!isBotGame && (
+                        <p className="font-mono text-haze-gray text-[0.65rem] tracking-wider max-w-lg mx-auto leading-relaxed border-t border-ocean-gray pt-2">
+                            🔒 {CRYPTO_TIP}
+                        </p>
+                    )}
+                    {isBotGame && (
+                        <p className="font-mono text-brass text-[0.65rem] tracking-wider max-w-lg mx-auto leading-relaxed border-t border-brass/30 pt-2">
+                            🎮 TUTORIAL MODE — No blockchain transactions. Place all ships and deploy!
+                        </p>
+                    )}
                 </div>
 
                 <div className="w-full flex flex-col md:flex-row gap-12 lg:gap-24 justify-center items-start">
@@ -301,7 +318,7 @@ export function ShipPlacement() {
                                             />
                                             {sealStatus || 'SEALING YOUR FLEET...'}
                                         </span>
-                                    ) : 'SEAL FLEET →'}
+                                    ) : isBotGame ? 'DEPLOY FLEET →' : 'SEAL FLEET →'}
                                 </button>
                             ) : (
                                 <motion.div

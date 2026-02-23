@@ -177,23 +177,40 @@ function parseGameState(native: any) {
   };
 }
 
+const STELLAR_ADDRESS_REGEX = /G[A-Z2-7]{55}/g;
+
 function normalizeAddress(raw: any): string {
   if (!raw) return '';
-  if (typeof raw === 'string') return raw;
+  if (typeof raw === 'string') {
+    const match = raw.match(STELLAR_ADDRESS_REGEX);
+    if (match && match[0]) return match[0];
+    return raw;
+  }
   if (typeof raw?.toString === 'function') {
     const asString = raw.toString();
-    if (typeof asString === 'string' && asString !== '[object Object]') return asString;
+    if (typeof asString === 'string' && asString !== '[object Object]') {
+      const match = asString.match(STELLAR_ADDRESS_REGEX);
+      if (match && match[0]) return match[0];
+      return asString;
+    }
   }
 
   const maybeAddressKeys = ['address', 'accountId', 'account_id', 'value', 'val', 'id'];
   for (const key of maybeAddressKeys) {
     const value = raw?.[key];
-    if (typeof value === 'string' && value.length > 10) return value;
+    if (typeof value === 'string' && value.length > 10) {
+      const match = value.match(STELLAR_ADDRESS_REGEX);
+      if (match && match[0]) return match[0];
+      return value;
+    }
   }
 
   if (raw && typeof raw === 'object') {
     for (const value of Object.values(raw)) {
-      if (typeof value === 'string' && value.length > 10) return value;
+      if (typeof value === 'string' && value.length > 10) {
+        const match = (value as string).match(STELLAR_ADDRESS_REGEX);
+        if (match && match[0]) return match[0];
+      }
       if (value && typeof value === 'object') {
         const nested = normalizeAddress(value);
         if (nested) return nested;
@@ -322,6 +339,8 @@ export async function POST(request: Request) {
       const stateNative = await simulateReadonly('get_game_state', caller, [StellarSdk.xdr.ScVal.scvBytes(gameIdBytes)]);
       let state = parseGameState(stateNative);
 
+      console.log('[bot-tick] currentTurn:', state.currentTurn, 'caller:', callerAddress, 'bot:', botAddress, 'status:', state.status);
+
       if (state.status === 'finished') {
         return Response.json({ ok: true, actions: ['finished'] });
       }
@@ -333,6 +352,8 @@ export async function POST(request: Request) {
 
         const botIsResolverTurn = state.currentTurn && state.currentTurn !== callerAddress;
         const pendingFromPlayer = pendingShooter && pendingShooter !== botAddress;
+
+        console.log('[bot-tick] hasPending:', hasPending, 'pendingShooter:', pendingShooter, 'botIsResolver:', botIsResolverTurn, 'fromPlayer:', pendingFromPlayer);
 
         if (botIsResolverTurn && pendingFromPlayer) {
           const targetX = Number(pending.target_x ?? pending.targetX ?? 0);
@@ -356,6 +377,7 @@ export async function POST(request: Request) {
 
       const hasPendingAfter = await simulateReadonly('has_pending_shot', caller, [StellarSdk.xdr.ScVal.scvBytes(gameIdBytes)]);
       const botIsShooterTurn = state.currentTurn && state.currentTurn !== callerAddress;
+      console.log('[bot-tick] fire-check hasPendingAfter:', hasPendingAfter, 'botIsShooter:', botIsShooterTurn, 'status:', state.status, 'turn:', state.turnNumber);
       if (hasPendingAfter !== true && botIsShooterTurn && state.status === 'active') {
         const target = pickBotTarget(state.turnNumber);
         const fireArgs = [

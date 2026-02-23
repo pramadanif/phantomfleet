@@ -6,13 +6,14 @@ import { WalletConnect } from './screens/WalletConnect';
 import { GameLobby } from './screens/GameLobby';
 import { ShipPlacement } from './screens/ShipPlacement';
 import { BattleScreen } from './screens/BattleScreen';
+import { LocalBattleScreen } from './screens/LocalBattleScreen';
 import { GameOver } from './screens/GameOver';
 import { GrainOverlay } from '../effects/GrainOverlay';
 import { ScanlineOverlay } from '../effects/ScanlineOverlay';
 import { motion, AnimatePresence } from 'motion/react';
 
 function GameRouter() {
-    const { screen, globalError, setGlobalError } = useGame();
+    const { screen, globalError, setGlobalError, isBotGame } = useGame();
 
     return (
         <div className="w-full min-h-screen relative">
@@ -43,7 +44,7 @@ function GameRouter() {
             {screen === 'CONNECTING' && <WalletConnect />}
             {screen === 'LOBBY' && <GameLobby />}
             {screen === 'PLACEMENT' && <ShipPlacement />}
-            {screen === 'BATTLE' && <BattleScreen />}
+            {screen === 'BATTLE' && (isBotGame ? <LocalBattleScreen /> : <BattleScreen />)}
             {screen === 'GAME_OVER' && <GameOver />}
         </div>
     );

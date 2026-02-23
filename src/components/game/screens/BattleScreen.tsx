@@ -256,6 +256,12 @@ export function BattleScreen() {
             setLastTx(txResult);
             soundEngine.play('proof_complete');
             pendingOutgoingCellRef.current = index;
+
+            // Clear proof overlay so bot tick effect is not blocked
+            setGeneratingProofCell(null);
+            setProofContext(null);
+            setProofProgress(0);
+
             setTurn('ENEMY');
             setLastMissInfo(null);
             setLastHitTx(null);
@@ -271,10 +277,13 @@ export function BattleScreen() {
     useEffect(() => {
         if (!isBotGame || !wallet?.address || !gameId) return;
         if (turn !== 'ENEMY' || pendingIncoming || generatingProofCell !== null) return;
-        if (botTickingRef.current) return;
 
-        botTickingRef.current = true;
+        let cancelled = false;
+        let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
         const runTick = async () => {
+            if (cancelled || botTickingRef.current) return;
+            botTickingRef.current = true;
             try {
                 const response = await fetch('/api/bot/onchain', {
                     method: 'POST',
@@ -293,14 +302,28 @@ export function BattleScreen() {
                 if (Array.isArray(data.actions) && data.actions.some((a: string) => String(a).startsWith('fired_at_'))) {
                     soundEngine.play('bot_fire');
                 }
+
+                // If bot did nothing, retry after delay (addresses or state may need to settle)
+                if (!cancelled && Array.isArray(data.actions) && data.actions.length === 0) {
+                    retryTimer = setTimeout(() => {
+                        botTickingRef.current = false;
+                        if (!cancelled) void runTick();
+                    }, 3000);
+                }
             } catch (error: any) {
                 setGlobalError(error?.message || 'Failed to advance on-chain bot turn');
             } finally {
-                botTickingRef.current = false;
+                // Only release lock if we're not scheduling a retry
+                if (!retryTimer) botTickingRef.current = false;
             }
         };
 
         void runTick();
+        return () => {
+            cancelled = true;
+            if (retryTimer) clearTimeout(retryTimer);
+            botTickingRef.current = false;
+        };
     }, [isBotGame, turn, pendingIncoming, generatingProofCell, wallet?.address, gameId, setGlobalError]);
 
     // Compute remaining ships
