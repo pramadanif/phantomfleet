@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="https://github.com/pramadanif/phantomfleet">GitHub Repository</a> ·
-  <a href="https://phantomfleet.xyz/game">Play on Testnet</a> ·
+  <a href="https://phantomfleet.vercel.app">Play on Testnet</a> ·
   Deployed on Stellar Testnet
 </p>
 
@@ -827,82 +827,76 @@ Worker → Main Thread:
 
 ## 10. Bot System
 
-The bot plays entirely server-side, signs transactions with its own keypair (no Freighter required), and generates ZK proofs using `snarkjs` in Node.js.
+**Current Implementation**: Phantom Fleet features a **LOCAL TUTORIAL mode** instead of an on-chain bot opponent. This mode provides a fully client-side practice environment for learning the game mechanics without blockchain operations.
 
-### 10.1 Bot Grid Layout
+### 10.1 Tutorial Mode (Local Battle Screen)
 
-**Source**: [`src/app/api/bot/onchain/route.ts`](https://github.com/pramadanif/phantomfleet/blob/main/src/app/api/bot/onchain/route.ts)
+**Source**: [`src/components/game/screens/LocalBattleScreen.tsx`](https://github.com/pramadanif/phantomfleet/blob/main/src/components/game/screens/LocalBattleScreen.tsx)
 
-The bot's ship layout is hardcoded (11 cells):
+When a player selects **"PLAY TUTORIAL"** from the game lobby (instead of "CREATE GAME" or "JOIN GAME"), the game bypasses all on-chain operations and runs purely client-side:
+
+1. **No blockchain commitment** — Ship layout is stored locally in React state, not hashed and committed on-chain
+2. **Instant feedback** — Tutorial opponent grid uses a hardcoded fleet layout visible to the game logic
+3. **Proximity feedback** — Same **Chebyshev distance hot/cold ring system** as PvP (green 🔴 HOT for ≤2 cells, yellow 🟡 WARM for 3-4 cells, blue 🔵 COLD for ≥5 cells)
+4. **Adaptive hints** — UI displays contextual tutorial hints as the player plays (e.g., "Try probing edges" or "Notice the green ring — ship is close!")
+
+**Tutorial Fleet Layout** (hardcoded, 11 cells):
 
 ```
 Col:  0   1   2   3   4   5
     ┌───┬───┬───┬───┬───┬───┐
-R0  │   │ ■ │ ■ │ ■ │ ■ │   │  ← Carrier (4 cells, cols 1-4)
+R0  │   │ ■ │ ■ │ ■ │ ■ │   │  ← Carrier (4 cells)
     ├───┼───┼───┼───┼───┼───┤
 R1  │   │   │   │   │   │   │
     ├───┼───┼───┼───┼───┼───┤
-R2  │ ■ │ ■ │ ■ │   │   │   │  ← Cruiser (3 cells, cols 0-2)
+R2  │ ■ │ ■ │ ■ │   │   │   │  ← Cruiser (3 cells)
     ├───┼───┼───┼───┼───┼───┤
-R3  │   │   │   │   │ ■ │ ■ │  ← Destroyer (2 cells, cols 4-5)
+R3  │   │   │   │   │ ■ │ ■ │  ← Destroyer (2 cells)
     ├───┼───┼───┼───┼───┼───┤
 R4  │   │   │   │   │   │   │
     ├───┼───┼───┼───┼───┼───┤
-R5  │ ■ │   │   │   │   │ ■ │  ← Scout α (col 0) + Scout β (col 5)
+R5  │ ■ │   │   │   │   │ ■ │  ← Scouts (2 × 1-cell)
     └───┴───┴───┴───┴───┴───┘
 ```
 
 Total: 4 + 3 + 2 + 1 + 1 = **11 cells** ✓
 
-### 10.2 Bot API Route
+**Game Flow:**
+1. Player places ships freely (no on-chain commitment)
+2. Opponent's grid is deterministic but hidden until reveal
+3. Player fires shots and receives instant proximity feedback (no ZK proofs needed)
+4. When defeated or when opponent is defeated, screen shows "TUTORIAL COMPLETE"
+5. Player can immediately start a new tutorial or switch to PvP
 
-**Endpoint**: `POST /api/bot/onchain`
+### 10.2 Game Routing
 
-**Source**: [`src/app/api/bot/onchain/route.ts`](https://github.com/pramadanif/phantomfleet/blob/main/src/app/api/bot/onchain/route.ts)
+**Source**: [`src/components/game/GameMachine.tsx`](https://github.com/pramadanif/phantomfleet/blob/main/src/components/game/GameMachine.tsx)
 
-The single endpoint handles all bot actions based on the `action` field in the request body:
+The game mode is determined at game start:
 
-| `action` | What Bot Does | Signs With |
-|----------|--------------|------------|
-| `commit` | Computes `computeCommitment(BOT_GRID, botNonce)`, calls `commit_layout` | Bot keypair |
-| `tick` | Reads game state. If bot must resolve → generate proof + `resolve_shot`. If bot's turn → `fire_shot` at next target | Bot keypair |
-| `reveal` | Calls `reveal_layout` with `BOT_GRID` + deterministic nonce | Bot keypair |
-
-**Tick logic:**
-```
-1. get_game_state(gameId) → if finished, return
-2. has_pending_shot(gameId)?
-   YES → bot is defender, generate Groth16 proof, call resolve_shot
-   NO  → is it bot's turn?
-         YES → pick next target, call fire_shot
-         NO  → return "waiting for player"
-```
-
-The bot selects targets using a deterministic formula based on turn number:
 ```typescript
-function pickBotTarget(turnNumber: number) {
-    const idx = Math.abs((turnNumber * 7 + 11) % 36);
-    return { x: idx % 6, y: Math.floor(idx / 6) };
+export function GameMachine() {
+    const { isBotGame } = useGame();
+    return isBotGame ? <LocalBattleScreen /> : <BattleScreen />;
 }
 ```
 
-### 10.3 Deterministic Nonce
+- **`isBotGame === true`**: Render [`LocalBattleScreen.tsx`](https://github.com/pramadanif/phantomfleet/blob/main/src/components/game/screens/LocalBattleScreen.tsx) (local tutorial, no blockchain)
+- **`isBotGame === false`**: Render `BattleScreen.tsx` (full on-chain PvP with ZK proofs)
 
-The bot's commitment nonce is derived deterministically from the game ID, so it can be regenerated at reveal time without needing state storage:
+### 10.3 Game Lobby Controls
 
-```typescript
-function deriveBotNonceDec(gameId: string): string {
-    const hash = crypto.createHash('sha256')
-        .update(`${BOT_NONCE_SALT}:${gameId}`)
-        .digest();
-    const raw = BigInt(`0x${hash.toString('hex')}`);
-    return (raw % BN254_R).toString();
-}
-```
+**Source**: [`src/components/game/screens/GameLobby.tsx`](https://github.com/pramadanif/phantomfleet/blob/main/src/components/game/screens/GameLobby.tsx)
 
-`BOT_NONCE_SALT` comes from `PHANTOM_BOT_NONCE_SALT` env var (default: `'phantomfleet-bot'`).
+The lobby offers three paths:
 
-This is critical: if the bot cannot reconstruct its nonce at reveal time, the revealed commitment wouldn't match. By deriving it from `SHA256(salt:gameId)`, the nonce is reproducible with only the game ID.
+| Button | Mode | Action |
+|--------|------|--------|
+| **PLAY TUTORIAL** | Local | Sets `isBotGame = true`, enters local battle screen immediately (no on-chain game creation) |
+| **CREATE GAME** | PvP | Calls `callStartGame(gameId)` on-chain, waits for opponent to commit layout |
+| **JOIN GAME** | PvP | Calls `callCommitLayout` to join an existing on-chain game |
+
+For tutorial mode, `ShipPlacement.tsx` skips all on-chain operations (no Merkle tree, no Poseidon, no contract calls) and directly enters `LocalBattleScreen` with the ship grid stored locally.
 
 ---
 
