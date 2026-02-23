@@ -47,6 +47,8 @@ export interface GameContextType {
     // Enemy fleet (for game-over reveal)
     enemyShipGrid: number[];
     setEnemyShipGrid: (g: number[]) => void;
+    opponentAddress: string | null;
+    setOpponentAddress: (a: string | null) => void;
 
     // Error handling
     globalError: string | null;
@@ -85,6 +87,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
 
     // Enemy fleet (for game-over reveal)
     const [enemyShipGrid, setEnemyShipGrid] = useState<number[]>(new Array(36).fill(0));
+    const [opponentAddress, setOpponentAddress] = useState<string | null>(null);
 
     // Error handling
     const [globalError, setGlobalError] = useState<string | null>(null);
@@ -180,6 +183,8 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
         setPlayerHits,
         enemyShipGrid,
         setEnemyShipGrid,
+        opponentAddress,
+        setOpponentAddress,
         globalError,
         setGlobalError,
     };

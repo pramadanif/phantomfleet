@@ -96,8 +96,24 @@ async function generateProofInWorker(witness: ShotWitness): Promise<ZKProof> {
 
     const targetIndex = witness.targetY * 6 + witness.targetX;
     const isHit = witness.shipGrid[targetIndex] === 1;
-    const minDist = 0;
-    const maxDist = 0;
+
+    // Compute Chebyshev proximity for misses
+    let minDist = 0;
+    let maxDist = 0;
+    if (!isHit) {
+        let closestDist = Infinity;
+        for (let i = 0; i < 36; i++) {
+            if (witness.shipGrid[i] !== 1) continue;
+            const cx = i % 6;
+            const cy = Math.floor(i / 6);
+            const d = Math.max(Math.abs(witness.targetX - cx), Math.abs(witness.targetY - cy));
+            if (d < closestDist) closestDist = d;
+        }
+        // Bucket into proximity rings for gameplay
+        if (closestDist <= 2) { minDist = 1; maxDist = 2; }
+        else if (closestDist <= 4) { minDist = 3; maxDist = 4; }
+        else { minDist = 5; maxDist = 8; }
+    }
 
     const commitmentDec = await computeCommitmentDec(witness.shipGrid, witness.layoutNonce);
 

@@ -14,11 +14,13 @@ import { soundEngine } from '../../../utils/soundEngine';
 import { computeCommitment } from '../../../utils/zkProof';
 
 export function GameOver() {
-    const { didWin, setScreen, setGameId, wallet, gameId, setLastTx, shotsFired, playerHits, isBotGame, enemyShipGrid, setEnemyShipGrid, shipGrid, layoutNonce } = useGame();
+    const { didWin, setScreen, setGameId, wallet, gameId, setLastTx, shotsFired, playerHits, isBotGame, enemyShipGrid, setEnemyShipGrid, shipGrid, layoutNonce, opponentAddress } = useGame();
     const [endGameTx] = useState<string | null>(null);
     const [revealStep, setRevealStep] = useState(0);
     const [revealStatus, setRevealStatus] = useState<string>('PUBLISHING YOUR REVEAL...');
     const revealFlowStartedRef = useRef<string | null>(null);
+
+    const isValidStellarAddress = (value: string) => /^G[A-Z2-7]{55}$/.test(value);
 
     const resultText = didWin ? "VICTORY" : "DEFEATED";
     const subText = didWin
@@ -93,20 +95,26 @@ export function GameOver() {
                     if (cancelled) return;
 
                     const state = await callGetGameState(wallet.address, gameId);
-                    const candidates = [state.player1, state.player2]
-                        .filter((address) => !!address && address !== wallet.address);
+                    const candidates = [opponentAddress, state.player1, state.player2]
+                        .filter((address): address is string => typeof address === 'string' && !!address && address !== wallet.address && isValidStellarAddress(address));
+                    const uniqueCandidates: string[] = Array.from(new Set(candidates));
 
-                    for (const opponentAddress of candidates) {
-                        const hasReveal = await callHasRevealedLayout(wallet.address, gameId, opponentAddress);
+                    if (uniqueCandidates.length === 0) {
+                        await new Promise((resolve) => setTimeout(resolve, 2000));
+                        continue;
+                    }
+
+                    for (const candidateAddress of uniqueCandidates) {
+                        const hasReveal = await callHasRevealedLayout(wallet.address, gameId, candidateAddress);
                         if (!hasReveal) continue;
 
                         const opponentCommitment = (
-                            opponentAddress === state.player1 ? state.p1Commitment : state.p2Commitment
+                            candidateAddress === state.player1 ? state.p1Commitment : state.p2Commitment
                         )
                             .toLowerCase()
                             .replace(/^0x/, '');
 
-                        const revealed = await callGetRevealedLayout(wallet.address, gameId, opponentAddress);
+                        const revealed = await callGetRevealedLayout(wallet.address, gameId, candidateAddress);
                         const recomputed = (await computeCommitment(revealed.shipGrid, revealed.layoutNonceHex))
                             .toLowerCase()
                             .replace(/^0x/, '');
@@ -135,7 +143,7 @@ export function GameOver() {
         return () => {
             cancelled = true;
         };
-    }, [isBotGame, wallet?.address, gameId, shipGrid, layoutNonce, setEnemyShipGrid]);
+    }, [isBotGame, wallet?.address, gameId, shipGrid, layoutNonce, setEnemyShipGrid, opponentAddress]);
 
     const handlePlayAgain = () => {
         setGameId(null);

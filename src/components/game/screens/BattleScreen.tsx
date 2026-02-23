@@ -25,13 +25,14 @@ type MissInfo = {
 };
 
 export function BattleScreen() {
-    const { wallet, gameId, shipGrid, layoutNonce, setScreen, setDidWin, setGlobalError, setLastTx, isBotGame, setShotsFired, shotsFired, setPlayerHits, playerHits, setEnemyShipGrid } = useGame();
+    const { wallet, gameId, shipGrid, layoutNonce, setScreen, setDidWin, setGlobalError, setLastTx, isBotGame, setShotsFired, shotsFired, setPlayerHits, playerHits, setEnemyShipGrid, setOpponentAddress } = useGame();
 
     const [turn, setTurn] = useState<'PLAYER' | 'ENEMY'>('PLAYER');
     const [enemyGrid, setEnemyGrid] = useState<Record<number, 'MISS' | 'HIT'>>({});
     const [enemyCellDist, setEnemyCellDist] = useState<Record<number, number>>({});
     const [playerGrid, setPlayerGrid] = useState<Record<number, 'MISS' | 'HIT'>>({});
     const [generatingProofCell, setGeneratingProofCell] = useState<number | null>(null);
+    const [proofContext, setProofContext] = useState<'OUTGOING' | 'INCOMING' | null>(null);
     const [proofProgress, setProofProgress] = useState(0);
     const [lastMissInfo, setLastMissInfo] = useState<MissInfo | null>(null);
     const [lastHitTx, setLastHitTx] = useState<string | null>(null);
@@ -107,6 +108,8 @@ export function BattleScreen() {
 
                 const myHitsReceived = state.player1 === wallet.address ? state.p1HitsReceived : state.p2HitsReceived;
                 const enemyHitsReceived = state.player1 === wallet.address ? state.p2HitsReceived : state.p1HitsReceived;
+                const opponent = state.player1 === wallet.address ? state.player2 : state.player1;
+                setOpponentAddress(opponent || null);
                 setPlayerHits(enemyHitsReceived);
 
                 if (myHitsReceived >= TOTAL_SHIP_CELLS || enemyHitsReceived >= TOTAL_SHIP_CELLS || state.status === 'Finished') {
@@ -168,6 +171,7 @@ export function BattleScreen() {
                         }
                         pendingOutgoingCellRef.current = null;
                         setGeneratingProofCell(null);
+                        setProofContext(null);
                         setProofProgress(0);
                     }
                 }
@@ -191,6 +195,7 @@ export function BattleScreen() {
         setDidWin,
         setScreen,
         setPlayerHits,
+        setOpponentAddress,
     ]);
 
     const handleResolveIncomingShot = async () => {
@@ -198,6 +203,7 @@ export function BattleScreen() {
         const cell = pendingIncoming.y * 6 + pendingIncoming.x;
 
         setGeneratingProofCell(cell);
+        setProofContext('INCOMING');
         setProofProgress(0);
         try {
             const proofResult = await generateProofViaWorker(pendingIncoming.x, pendingIncoming.y);
@@ -213,6 +219,7 @@ export function BattleScreen() {
             setGlobalError(err?.message || 'Failed to resolve incoming shot');
         } finally {
             setGeneratingProofCell(null);
+            setProofContext(null);
             setProofProgress(0);
         }
     };
@@ -233,6 +240,7 @@ export function BattleScreen() {
         }
 
         setGeneratingProofCell(index);
+        setProofContext('OUTGOING');
         setProofProgress(100);
         soundEngine.play('shot_fire');
         setShotsFired(shotsFired + 1);
@@ -255,6 +263,7 @@ export function BattleScreen() {
         } catch (err: any) {
             setGlobalError(err?.message || 'Unknown error');
             setGeneratingProofCell(null);
+            setProofContext(null);
             setProofProgress(0);
         }
     };
@@ -310,13 +319,15 @@ export function BattleScreen() {
         for (let i = 0; i < 36; i++) {
             const hasShip = shipGrid[i] === 1;
             const hitState = playerGrid[i];
+            const isResolvingCell = proofContext === 'INCOMING' && generatingProofCell === i;
             const rowLabel = i % 6 === 0 ? String.fromCharCode(65 + Math.floor(i / 6)) : '';
             const colLabel = i < 6 ? (i + 1).toString() : '';
             cells.push(
                 <div key={`y-${i}`} className={`relative w-[34px] h-[34px] md:w-[38px] md:h-[38px] xl:w-[48px] xl:h-[48px] border border-ocean-gray ${hitState === 'HIT' ? 'bg-signal-red/20 border-signal-red' :
                     hitState === 'MISS' ? 'bg-hull' :
                         hasShip ? 'bg-mist-blue border-brass border-[1px]' : 'bg-hull'
-                    }`}>
+                    } ${isResolvingCell ? 'border-radar border-2 bg-radar/10' : ''}`}
+                    style={isResolvingCell ? { boxShadow: '0 0 12px rgba(61,255,110,0.6), inset 0 0 12px rgba(61,255,110,0.2)' } : {}}>
                     {colLabel && <div className="absolute -top-5 left-1/2 -translate-x-1/2 font-mono text-[0.6rem] text-haze-gray">{colLabel}</div>}
                     {rowLabel && <div className="absolute -left-5 top-1/2 -translate-y-1/2 font-mono text-[0.6rem] text-haze-gray">{rowLabel}</div>}
                     {hitState === 'HIT' && (
@@ -344,7 +355,7 @@ export function BattleScreen() {
         const cells = [];
         for (let i = 0; i < 36; i++) {
             const state = enemyGrid[i];
-            const isGenerating = generatingProofCell === i;
+            const isGenerating = proofContext === 'OUTGOING' && generatingProofCell === i;
             const rowLabel = i % 6 === 0 ? String.fromCharCode(65 + Math.floor(i / 6)) : '';
             const colLabel = i < 6 ? (i + 1).toString() : '';
             cells.push(
@@ -515,7 +526,7 @@ export function BattleScreen() {
                                                     <line x1="20" y1="12" x2="23" y2="12"></line>
                                                 </svg>
                                             </motion.div>
-                                            <span className="font-mono text-smoke text-sm">GENERATING ZK PROOF</span>
+                                            <span className="font-mono text-smoke text-sm">{proofContext === 'INCOMING' ? 'RESOLVING INCOMING SHOT' : 'GENERATING ZK PROOF'}</span>
                                         </div>
                                         <div className="font-mono text-haze-gray text-[0.65rem] mb-3">Circom circuit · BN254 · Groth16</div>
                                         <div className="w-full h-1 bg-abyss border border-ocean-gray">

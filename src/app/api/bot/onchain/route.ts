@@ -13,12 +13,12 @@ const BOT_SECRET_KEY = process.env.PHANTOM_BOT_SECRET_KEY || '';
 const BOT_NONCE_SALT = process.env.PHANTOM_BOT_NONCE_SALT || 'phantomfleet-bot';
 
 const BOT_GRID = [
-  0, 0, 0, 0, 1, 1,
-  0, 0, 0, 1, 1, 1,
-  0, 0, 1, 1, 0, 0,
+  0, 1, 1, 1, 1, 0,
   0, 0, 0, 0, 0, 0,
-  0, 0, 0, 0, 0, 1,
-  1, 0, 0, 0, 0, 0,
+  1, 1, 1, 0, 0, 0,
+  0, 0, 0, 0, 1, 1,
+  0, 0, 0, 0, 0, 0,
+  1, 0, 0, 0, 0, 1,
 ];
 
 const BN254_R = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
@@ -213,15 +213,34 @@ async function proveForBot(targetX: number, targetY: number, gameId: string) {
   const nonceDec = deriveBotNonceDec(gameId);
   const layoutCommitment = await computeCommitment(BOT_GRID, nonceDec);
 
+  const isHit = BOT_GRID[targetY * 6 + targetX] === 1;
+
+  // Compute Chebyshev proximity for misses
+  let minDist = 0;
+  let maxDist = 0;
+  if (!isHit) {
+      let closestDist = Infinity;
+      for (let i = 0; i < 36; i++) {
+          if (BOT_GRID[i] !== 1) continue;
+          const cx = i % 6;
+          const cy = Math.floor(i / 6);
+          const d = Math.max(Math.abs(targetX - cx), Math.abs(targetY - cy));
+          if (d < closestDist) closestDist = d;
+      }
+      if (closestDist <= 2) { minDist = 1; maxDist = 2; }
+      else if (closestDist <= 4) { minDist = 3; maxDist = 4; }
+      else { minDist = 5; maxDist = 8; }
+  }
+
   const input = {
     ship_grid: BOT_GRID,
     layout_nonce: nonceDec,
     target_x: targetX,
     target_y: targetY,
     layout_commitment: layoutCommitment,
-    min_dist: 0,
-    max_dist: 0,
-    is_hit: BOT_GRID[targetY * 6 + targetX] === 1 ? 1 : 0,
+    min_dist: minDist,
+    max_dist: maxDist,
+    is_hit: isHit ? 1 : 0,
   };
 
   const wasmPath = path.resolve(process.cwd(), 'public/circuits/circom/phantom_fleet.wasm');
@@ -298,6 +317,7 @@ export async function POST(request: Request) {
 
     if (action === 'tick') {
       const actions: string[] = [];
+      const callerAddress = normalizeAddress(caller);
 
       const stateNative = await simulateReadonly('get_game_state', caller, [StellarSdk.xdr.ScVal.scvBytes(gameIdBytes)]);
       let state = parseGameState(stateNative);
@@ -309,8 +329,12 @@ export async function POST(request: Request) {
       const hasPending = await simulateReadonly('has_pending_shot', caller, [StellarSdk.xdr.ScVal.scvBytes(gameIdBytes)]);
       if (hasPending === true) {
         const pending = await simulateReadonly('get_pending_shot', caller, [StellarSdk.xdr.ScVal.scvBytes(gameIdBytes)]);
+        const pendingShooter = normalizeAddress(pending.shooter ?? pending.shooter_address ?? '');
 
-        if (state.currentTurn === botAddress) {
+        const botIsResolverTurn = state.currentTurn && state.currentTurn !== callerAddress;
+        const pendingFromPlayer = pendingShooter && pendingShooter !== botAddress;
+
+        if (botIsResolverTurn && pendingFromPlayer) {
           const targetX = Number(pending.target_x ?? pending.targetX ?? 0);
           const targetY = Number(pending.target_y ?? pending.targetY ?? 0);
           const { proofHex, publicInputs } = await proveForBot(targetX, targetY, gameId);
@@ -331,7 +355,8 @@ export async function POST(request: Request) {
       }
 
       const hasPendingAfter = await simulateReadonly('has_pending_shot', caller, [StellarSdk.xdr.ScVal.scvBytes(gameIdBytes)]);
-      if (hasPendingAfter !== true && state.currentTurn === botAddress && state.status === 'active') {
+      const botIsShooterTurn = state.currentTurn && state.currentTurn !== callerAddress;
+      if (hasPendingAfter !== true && botIsShooterTurn && state.status === 'active') {
         const target = pickBotTarget(state.turnNumber);
         const fireArgs = [
           StellarSdk.xdr.ScVal.scvBytes(gameIdBytes),

@@ -282,6 +282,76 @@ function parseGameStatus(rawStatus: any): OnChainGameStatus {
     return 'WaitingForCommitments';
 }
 
+const STELLAR_ADDRESS_REGEX = /G[A-Z2-7]{55}/g;
+
+function isValidStellarAddress(value: string): boolean {
+    return /^G[A-Z2-7]{55}$/.test(value);
+}
+
+function extractStellarAddresses(raw: any): string[] {
+    const found = new Set<string>();
+
+    const walk = (input: any) => {
+        if (!input) return;
+
+        if (typeof input === 'string') {
+            const matches = input.match(STELLAR_ADDRESS_REGEX) || [];
+            for (const match of matches) found.add(match);
+            return;
+        }
+
+        if (Array.isArray(input)) {
+            for (const item of input) walk(item);
+            return;
+        }
+
+        if (typeof input === 'object') {
+            for (const value of Object.values(input)) walk(value);
+        }
+    };
+
+    walk(raw);
+    return Array.from(found);
+}
+
+function normalizeAddress(rawAddress: any): string {
+    if (!rawAddress) return '';
+    if (typeof rawAddress === 'string') {
+        const match = rawAddress.match(STELLAR_ADDRESS_REGEX);
+        if (match && match[0]) return match[0];
+        return rawAddress;
+    }
+    if (typeof rawAddress?.toString === 'function') {
+        const value = rawAddress.toString();
+        if (typeof value === 'string' && value !== '[object Object]') {
+            const match = value.match(STELLAR_ADDRESS_REGEX);
+            if (match && match[0]) return match[0];
+            return value;
+        }
+    }
+
+    const candidates = ['address', 'accountId', 'account_id', 'value', 'val', 'id'];
+    for (const key of candidates) {
+        const value = rawAddress?.[key];
+        if (typeof value === 'string' && value.length > 8) return value;
+    }
+
+    if (rawAddress && typeof rawAddress === 'object') {
+        const extracted = extractStellarAddresses(rawAddress);
+        if (extracted.length > 0) return extracted[0];
+
+        for (const value of Object.values(rawAddress)) {
+            if (typeof value === 'string' && value.length > 8) return value;
+            if (value && typeof value === 'object') {
+                const nested = normalizeAddress(value);
+                if (nested) return nested;
+            }
+        }
+    }
+
+    return String(rawAddress);
+}
+
 function scValToNativeSafe(scVal: any): any {
     return StellarSdk.scValToNative(scVal as StellarSdk.xdr.ScVal);
 }
@@ -448,19 +518,29 @@ export async function callGetGameState(
         throw new Error('Invalid game state response');
     }
 
-    const p1 = String(native.player1 ?? native.player_1 ?? '');
-    const p2 = String(native.player2 ?? native.player_2 ?? '');
+    const p1 = normalizeAddress(native.player1 ?? native.player_1 ?? '');
+    const p2 = normalizeAddress(native.player2 ?? native.player_2 ?? '');
+    const extracted = extractStellarAddresses(native);
+    const fallbackP1 = extracted[0] || '';
+    const fallbackP2 = extracted[1] || '';
+    const normalizedP1 = isValidStellarAddress(p1) ? p1 : fallbackP1;
+    const normalizedP2 = isValidStellarAddress(p2) ? p2 : fallbackP2;
+
+    const currentTurnRaw = normalizeAddress(native.current_turn ?? native.currentTurn ?? '');
+    const normalizedCurrentTurn = isValidStellarAddress(currentTurnRaw)
+        ? currentTurnRaw
+        : (normalizedP1 || normalizedP2 || currentTurnRaw);
     const p1CommitmentBytes: Uint8Array = native.p1_commitment ?? native.p1Commitment ?? new Uint8Array(32);
     const p2CommitmentBytes: Uint8Array = native.p2_commitment ?? native.p2Commitment ?? new Uint8Array(32);
 
     return {
-        player1: p1,
-        player2: p2,
+        player1: normalizedP1,
+        player2: normalizedP2,
         p1Commitment: Buffer.from(p1CommitmentBytes).toString('hex'),
         p2Commitment: Buffer.from(p2CommitmentBytes).toString('hex'),
         p1HitsReceived: Number(native.p1_hits_received ?? native.p1HitsReceived ?? 0),
         p2HitsReceived: Number(native.p2_hits_received ?? native.p2HitsReceived ?? 0),
-        currentTurn: String(native.current_turn ?? native.currentTurn ?? ''),
+        currentTurn: normalizedCurrentTurn,
         status: parseGameStatus(native.status),
         turnNumber: Number(native.turn_number ?? native.turnNumber ?? 0),
         sessionId: Number(native.session_id ?? native.sessionId ?? 0),
@@ -488,7 +568,7 @@ export async function callGetPendingShot(callerAddress: string, gameId: string):
     );
 
     return {
-        shooter: String(native.shooter ?? ''),
+        shooter: normalizeAddress(native.shooter ?? ''),
         targetX: Number(native.target_x ?? native.targetX ?? 0),
         targetY: Number(native.target_y ?? native.targetY ?? 0),
     };
