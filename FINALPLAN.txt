@@ -1,0 +1,221 @@
+PHANTOM FLEET — FINAL VERDICT & README REFERENCE
+(Circom + SnarkJS Edition — untuk AI Agent Audit)
+
+STACK FINAL YANG SUDAH TERVERIFIKASI
+Circuit Language:  Circom 2.1.5
+Proving System:    Groth16 (SnarkJS)
+Hash Function:     Poseidon (circomlib)
+Proof Size:        256 bytes (pi_a 64 + pi_b 128 + pi_c 64)
+On-chain Verify:   Stellar Soroban BN254 precompile (Protocol 25)
+Browser Prover:    snarkjs groth16.fullProve() via Web Worker
+
+ZK STATEMENT FINAL
+
+"Prover membuktikan bahwa tembakan di koordinat (target_x, target_y) adalah hit atau miss sesuai layout yang di-commit via Poseidon hash, DAN untuk miss: jarak Chebyshev dari sel kapal terdekat berada dalam range [min_dist, max_dist] — tanpa mengungkapkan posisi kapal manapun. Verifier on-chain (Soroban BN254 precompile) mengkonfirmasi kebenaran klaim ini tanpa mempercayai siapapun."
+
+
+CIRCUIT SPEC FINAL
+File:              circuits/phantom_fleet.circom
+Dependencies:      circomlib (Poseidon, Comparators, Mux1, Bitify)
+
+Private Inputs:
+  ship_grid[36]       — Flattened 6×6 grid, 1=ship 0=water
+  layout_nonce        — Random nonce, prevents pre-image attacks
+  closest_ship_x      — X koordinat kapal terdekat (private)
+  closest_ship_y      — Y koordinat kapal terdekat (private)
+  merkle_path[6]      — Sibling hashes untuk Merkle proof
+  merkle_indices[6]   — 0=left 1=right per level
+
+Public Inputs (diverifikasi on-chain):
+  target_x            — Kolom tembakan (0-5)
+  target_y            — Baris tembakan (0-5)
+  layout_commitment   — Poseidon(ship_grid[0..35], nonce)
+  min_dist            — Proximity range lower bound
+  max_dist            — Proximity range upper bound
+  is_hit              — 0=miss, 1=hit
+
+Constraints (4 grup):
+  1. Commitment integrity: Poseidon(37 inputs) == layout_commitment
+  2. Bounds check: target_x < 6, target_y < 6
+  3. Hit/miss honesty: ship_grid[target_y*6+target_x] == is_hit
+  4. Proximity (hanya saat miss):
+     4a. closest_ship adalah sel kapal valid (ship_grid[idx] == 1)
+     4b. Merkle proof: closest cell ada di committed layout
+     4c. Chebyshev distance dalam [min_dist, max_dist]
+     4d. Tidak ada sel kapal lebih dekat dari yang diklaim
+         (iterasi 36 sel — NECESSARY untuk soundness)
+
+Distance Metric:   Chebyshev = max(|dx|, |dy|)
+Rationale:         Menghilangkan square root circuit (~200 saved constraints)
+                   Maps naturally ke "ring" proximity UX
+
+Constraint Count:  ~850 total
+Proof Generation:  ~8 detik browser WASM (Web Worker)
+Proof Size:        256 bytes Groth16
+
+TRUSTED SETUP
+Powers of Tau:     pot15_final.ptau (Hermez ceremony, public)
+                   Supports up to 2^15 = 32768 constraints
+Circuit zkey:      circuit_final.zkey (phase 2, contributed)
+Verification Key:  verification_key.json → di-set ke Soroban contract
+                   via set_verification_key() setelah deploy
+
+PROOF FORMAT & SOROBAN INTEGRATION
+Proof bytes layout (256 bytes total):
+  pi_a:  bytes  0- 63  (G1 point, 64 bytes)
+  pi_b:  bytes 64-191  (G2 point, 128 bytes)
+  pi_c:  bytes 192-255 (G1 point, 64 bytes)
+
+Public inputs format:
+  Vec<BytesN<32>> — 6 elements, urutan:
+  [0] layout_commitment  (32 bytes field element)
+  [1] target_x           (32 bytes, value in last byte)
+  [2] target_y           (32 bytes, value in last byte)
+  [3] min_dist           (32 bytes, value in last byte)
+  [4] max_dist           (32 bytes, value in last byte)
+  [5] is_hit             (32 bytes, value in last byte)
+
+On-chain verification call:
+  env.crypto().bn254().pairing_check(g1_vec, g2_vec)
+  → true jika proof valid, false/panic jika tidak
+
+GAME HUB INTEGRATION
+Contract Address:  CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG
+Network:           Stellar Testnet
+
+start_game() dipanggil saat: initialize_game() dieksekusi
+  Parameters: (self_address, session_id, player1, player2, 0, 0)
+
+end_game() dipanggil saat: p1_hits >= TOTAL atau p2_hits >= TOTAL
+  Parameters: (session_id, player1_won: bool)
+
+WAJIB: Kedua calls harus ada di transaction history
+       untuk memenuhi hackathon submission requirement
+
+GAME CONSTANTS FINAL
+Grid Size:         6×6 = 36 cells
+Ships:             Carrier(4) + Cruiser(3) + Destroyer(2) + Scout(1) + Scout(1)
+Total Ship Cells:  11
+Win Condition:     hits_received >= 11
+Proximity Ranges:
+  HOT:   min_dist=1, max_dist=2
+  WARM:  min_dist=3, max_dist=4
+  COLD:  min_dist=5, max_dist=6
+
+FRONTEND PROOF FLOW
+javascript// Web Worker — non-blocking proof generation
+const { proof, publicSignals } = await groth16.fullProve(
+  {
+    ship_grid,        // private: defender's grid (stored locally)
+    layout_nonce,     // private: nonce from commitment phase
+    closest_ship_x,   // private: computed by frontend
+    closest_ship_y,   // private: computed by frontend
+    merkle_path,      // private: computed from Merkle tree
+    merkle_indices,   // private: computed from Merkle tree
+    target_x,         // public
+    target_y,         // public
+    layout_commitment,// public: from contract storage
+    min_dist,         // public: computed by frontend
+    max_dist,         // public: computed by frontend
+    is_hit,           // public: computed by frontend
+  },
+  'phantom_fleet.wasm',  // compiled circuit
+  'circuit_final.zkey'   // proving key
+)
+
+// Serialize untuk Soroban
+const proofBytes = serializeGroth16(proof)
+// → Uint8Array 256 bytes
+
+const pubInputBytes = publicSignals.map(s =>
+  hexToBytes(BigInt(s).toString(16).padStart(64, '0'))
+)
+// → BytesN<32>[] × 6
+```
+
+---
+
+## CHECKLIST UNTUK AI AGENT AUDIT
+
+AI agent yang mengaudit README dan codebase harus memverifikasi semua item ini:
+
+**Circuit:**
+- [ ] `phantom_fleet.circom` menggunakan Circom 2.1.5
+- [ ] Import dari `circomlib`: Poseidon, Comparators, Mux1
+- [ ] 6 public inputs dalam urutan yang benar
+- [ ] Constraint 4d ada (iterasi 36 sel) — jika tidak ada, flag sebagai soundness bug
+- [ ] Distance metric adalah Chebyshev bukan Euclidean
+- [ ] `component main { public [...] }` mendefinisikan 6 public signals
+
+**Trusted Setup:**
+- [ ] `circuit_final.zkey` ada dan merupakan output dari phase 2
+- [ ] `verification_key.json` di-export dari zkey
+- [ ] VK telah di-set ke Soroban contract via `set_verification_key()`
+
+**Contract:**
+- [ ] `bn254().pairing_check()` dipanggil di `submit_shot()`
+- [ ] `start_game()` memanggil game hub
+- [ ] `end_game()` memanggil game hub saat win condition terpenuhi
+- [ ] `TOTAL_SHIP_CELLS = 11` (bukan 10 atau 14)
+- [ ] `get_verification_key()` panic jika VK belum di-set (bukan silent return empty)
+
+**Frontend:**
+- [ ] Proof generation berjalan di Web Worker
+- [ ] `groth16.fullProve()` dari snarkjs digunakan (bukan mock)
+- [ ] Proof bytes diformat sebagai 256 bytes (pi_a + pi_b + pi_c)
+- [ ] Public inputs diformat sebagai `Vec<BytesN<32>>`
+- [ ] Setiap `submit_shot` transaction menampilkan Stellar Explorer link
+- [ ] Proximity ring muncul setelah miss dengan range yang benar
+
+**Submission Requirements:**
+- [ ] ZK proof powers core mechanic (bukan README-only claim)
+- [ ] Contract deployed di Stellar Testnet dengan address nyata
+- [ ] Game Hub `start_game()` + `end_game()` ada di transaction history
+- [ ] Frontend accessible tanpa install (hosted URL)
+- [ ] GitHub repo public dengan README
+- [ ] Video 2-3 menit dimulai dengan Stellar Explorer cold open
+
+---
+
+## KNOWN SOUNDNESS LIMITATION (HARUS ADA DI README)
+```
+Jika constraint 4d di-remove karena performance:
+Tambahkan section ini di README ZK Architecture:
+
+"Soundness Note: The 'closest cell' constraint (4d) is implemented
+as a full 36-cell iteration. If removed for performance, the proximity
+claim becomes a honest-but-unverified hint — the prover could
+report a farther cell as closest. In the current implementation,
+this constraint is present and enforced."
+
+Jika 4d ada: jangan tambahkan note ini.
+```
+
+---
+
+## ARCHITECTURE DIAGRAM FINAL
+```
+PLAYER BROWSER                    STELLAR TESTNET
+──────────────                    ───────────────
+Place ships
+Build Merkle tree
+Poseidon(grid, nonce) ──────────→ commit_layout()
+                                  store(commitment)
+
+Click target cell
+Compute witness
+  - closest ship
+  - merkle path
+  - chebyshev dist
+snarkjs.groth16
+  .fullProve()
+  (~8 seconds)
+  → proof 256 bytes ──────────→  submit_shot()
+  → publicSignals   ──────────→  bn254().pairing_check()
+                                  ✓ proof valid
+                                  update game state
+                                  emit(hit/miss/proximity)
+Receive result  ←────────────────
+Show proximity rings
+"VERIFIED ON STELLAR ↗"
+  [explorer link]

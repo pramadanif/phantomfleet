@@ -2,13 +2,13 @@
 
 import { motion } from 'motion/react';
 import { useGame } from '../GameContext';
-import { callEndGame, EXPLORER_BASE } from '../../../utils/stellar';
+import { EXPLORER_BASE } from '../../../utils/stellar';
 import { useState, useEffect } from 'react';
 import { soundEngine } from '../../../utils/soundEngine';
 
 export function GameOver() {
     const { didWin, setScreen, setGameId, wallet, gameId, setLastTx, shotsFired, playerHits, isBotGame, enemyShipGrid } = useGame();
-    const [endGameTx, setEndGameTx] = useState<string | null>(null);
+    const [endGameTx] = useState<string | null>(null);
     const [revealStep, setRevealStep] = useState(0);
 
     const resultText = didWin ? "VICTORY" : "DEFEATED";
@@ -39,21 +39,6 @@ export function GameOver() {
         }, 80);
         return () => clearInterval(timer);
     }, []);
-
-    // Call end_game on mount (skip for bot games)
-    useEffect(() => {
-        if (isBotGame) return;
-        async function endGame() {
-            try {
-                const result = await callEndGame(wallet?.address || '', gameId || '');
-                setEndGameTx(result.txHash);
-                setLastTx(result);
-            } catch {
-                // Non-fatal
-            }
-        }
-        endGame();
-    }, [wallet, gameId, setLastTx, isBotGame]);
 
     const handlePlayAgain = () => {
         setGameId(null);
@@ -99,10 +84,10 @@ export function GameOver() {
                                     animate={isRevealed ? { scale: 1, opacity: 1, rotateY: 0 } : {}}
                                     transition={{ duration: 0.4, ease: 'easeOut' }}
                                     className={`w-8 h-8 border flex items-center justify-center font-mono text-xs ${isRevealed
-                                            ? isShip
-                                                ? 'bg-signal-red/30 border-signal-red text-signal-red'
-                                                : 'bg-ocean-gray/20 border-ocean-gray/50 text-ocean-gray'
-                                            : 'bg-hull border-ocean-gray/30'
+                                        ? isShip
+                                            ? 'bg-signal-red/30 border-signal-red text-signal-red'
+                                            : 'bg-ocean-gray/20 border-ocean-gray/50 text-ocean-gray'
+                                        : 'bg-hull border-ocean-gray/30'
                                         }`}
                                     style={isRevealed && isShip ? { boxShadow: 'inset 0 0 12px rgba(192,57,43,0.8), 0 0 8px rgba(192,57,43,0.5)' } : {}}
                                 >

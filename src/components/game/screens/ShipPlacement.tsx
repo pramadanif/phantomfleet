@@ -4,7 +4,7 @@ import { useState, useCallback } from 'react';
 import { motion } from 'motion/react';
 import { useGame } from '../GameContext';
 import { buildMerkleTree, computeCommitment } from '../../../utils/zkProof';
-import { callCommitLayout, EXPLORER_BASE } from '../../../utils/stellar';
+import { callCommitLayout, callGetGameState, callHasVerificationKey, EXPLORER_BASE } from '../../../utils/stellar';
 import { soundEngine } from '../../../utils/soundEngine';
 
 type ShipType = 'CARRIER' | 'CRUISER' | 'DESTROYER' | 'SCOUT';
@@ -36,6 +36,26 @@ export function ShipPlacement() {
     const [isSealing, setIsSealing] = useState(false);
     const [sealedTx, setSealedTx] = useState<string | null>(null);
     const [sealStatus, setSealStatus] = useState<string>('');
+
+    const isZeroCommitment = (hex: string) => {
+        const clean = hex.toLowerCase().replace(/^0x/, '');
+        return clean === ''.padStart(64, '0');
+    };
+
+    const waitForGameActive = async (callerAddress: string, gameIdValue: string) => {
+        const timeoutMs = 5 * 60 * 1000;
+        const pollMs = 2500;
+        const started = Date.now();
+
+        while (Date.now() - started < timeoutMs) {
+            const state = await callGetGameState(callerAddress, gameIdValue);
+            const bothCommitted = !isZeroCommitment(state.p1Commitment) && !isZeroCommitment(state.p2Commitment);
+            if (state.status === 'Active' || bothCommitted) return;
+            await new Promise((resolve) => setTimeout(resolve, pollMs));
+        }
+
+        throw new Error('Opponent has not sealed fleet yet (or game state has not synchronized). Please retry in a few seconds.');
+    };
 
     const getHoverCells = useCallback((startIndex: number, size: number, ori: Orientation) => {
         const row = Math.floor(startIndex / 6);
@@ -85,6 +105,10 @@ export function ShipPlacement() {
     const handleSeal = async () => {
         setIsSealing(true);
         try {
+            if (isBotGame) {
+                throw new Error('Bot mode is disabled in strict production mode. Use on-chain PvP flow.');
+            }
+
             // 1. Convert placed ships to flat grid
             const grid = new Array(36).fill(0);
             Object.values(placedShips).forEach(ship => {
@@ -104,33 +128,29 @@ export function ShipPlacement() {
             setShipGrid(grid);
             setLayoutNonce(nonce);
 
-            if (isBotGame) {
-                // Bot games: purely client-side — no Soroban calls needed
-                // The commitment is computed locally using the exact same Poseidon hash
-                // as the on-chain circuit. We skip contract submission since there's
-                // no on-chain game state for bot matches.
-                setSealStatus('FLEET SEALED LOCALLY');
-                setSealedTx('local-' + commitment.slice(2, 14));
-                setSealStatus('');
-
-                // Go directly to battle
-                setTimeout(() => {
-                    setScreen('BATTLE');
-                }, 1500);
-            } else {
-                // PvP: submit commitment on-chain via Soroban
-                setSealStatus('SUBMITTING TO STELLAR...');
-                const txResult = await callCommitLayout(wallet?.address || '', gameId || '', commitment);
-
-                setLastTx(txResult);
-                setSealedTx(txResult.txHash);
-                setSealStatus('');
-
-                // Wait for opponent, then navigate
-                setTimeout(() => {
-                    setScreen('BATTLE');
-                }, 2500);
+            if (!wallet?.address || !gameId) {
+                throw new Error('Wallet or game session missing');
             }
+
+            setSealStatus('VERIFYING PROTOCOL 25 SETUP...');
+            const hasVk = await callHasVerificationKey(wallet.address);
+            if (!hasVk) {
+                throw new Error('Verification key is not configured on-chain. Run scripts/set_vk.sh first.');
+            }
+
+            setSealStatus('SUBMITTING TO STELLAR...');
+            const txResult = await callCommitLayout(wallet.address, gameId, commitment);
+
+            setLastTx(txResult);
+            setSealedTx(txResult.txHash);
+            setSealStatus('AWAITING OPPONENT COMMITMENT...');
+
+            await waitForGameActive(wallet.address, gameId);
+            setSealStatus('BOTH FLEETS SEALED. ENTERING BATTLE...');
+
+            setTimeout(() => {
+                setScreen('BATTLE');
+            }, 1200);
         } catch (err: any) {
             setGlobalError('Fleet sealing failed: ' + (err.message || 'Unknown error'));
             setIsSealing(false);
@@ -236,7 +256,13 @@ export function ShipPlacement() {
                                                 ))}
                                             </div>
                                         </div>
-                                        {isPlaced && <div className="text-deck-green text-xl font-bold">●</div>}
+                                        {isPlaced && (
+                                            <div className="text-deck-green">
+                                                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                                                    <circle cx="12" cy="12" r="8"></circle>
+                                                </svg>
+                                            </div>
+                                        )}
                                     </button>
                                 );
                             })}

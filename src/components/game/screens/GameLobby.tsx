@@ -7,6 +7,7 @@ import { useGame } from '../GameContext';
 import { callStartGame, EXPLORER_BASE } from '../../../utils/stellar';
 
 export function GameLobby() {
+    const BOT_MODE_ENABLED = process.env.NEXT_PUBLIC_ENABLE_BOT_MODE === '1';
     const { wallet, account, setScreen, setGameId, gameId, setGlobalError, setIsBotGame } = useGame();
     const [createdGameId, setCreatedGameId] = useState<string | null>(null);
     const [joinInput, setJoinInput] = useState('');
@@ -16,6 +17,10 @@ export function GameLobby() {
     const walletAddress = wallet?.address || '';
 
     const handlePlayVsBot = () => {
+        if (!BOT_MODE_ENABLED) {
+            setGlobalError('Bot mode is disabled in strict production mode. Use on-chain PvP flow.');
+            return;
+        }
         const botGameId = 'BOT-' + Math.random().toString(36).substring(2, 8).toUpperCase();
         setGameId(botGameId);
         setIsBotGame(true);
@@ -25,10 +30,14 @@ export function GameLobby() {
     const handleCreateGame = async () => {
         setIsDeploying(true);
         try {
-            const result = await callStartGame(walletAddress, walletAddress);
-            setCreatedGameId(result.gameId);
+            // Generate a very short, shareable game ID
+            const newGameId = 'GAME-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+            // For game creation, player1 = creator, player2 = creator (placeholder).
+            // The real opponent joins by committing their layout with the same game_id.
+            const result = await callStartGame(walletAddress, walletAddress, walletAddress, newGameId);
+            setCreatedGameId(newGameId);
             setDeployTx(result.txHash);
-            setGameId(result.gameId);
+            setGameId(newGameId);
         } catch (err: any) {
             setGlobalError('Failed to deploy game: ' + (err.message || 'Unknown error'));
         } finally {
@@ -59,33 +68,37 @@ export function GameLobby() {
 
             <div className="max-w-6xl mx-auto w-full px-6 flex-1 flex flex-col pt-12">
 
-                {/* PLAY VS BOT — Hero Feature */}
-                <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="mb-12"
-                >
-                    <div className="bg-hull border-2 border-brass p-8 flex flex-col md:flex-row items-center justify-between gap-6"
-                        style={{ boxShadow: '0 0 40px rgba(184,150,46,0.15), inset 0 0 40px rgba(184,150,46,0.05)' }}>
-                        <div>
-                            <h2 className="font-display text-brass text-3xl tracking-widest mb-2">INSTANT BATTLE</h2>
-                            <p className="font-mono text-smoke text-sm leading-relaxed max-w-xl">
-                                Play against the <span className="text-brass font-bold">Phantom AI</span> — no opponent needed.<br />
-                                Full ZK proof generation. Local Poseidon commitment. Immediate gameplay.
-                            </p>
-                            <p className="font-mono text-haze-gray text-xs mt-2">
-                                Bot fleet is committed locally with the same Poseidon hash as on-chain players.
-                            </p>
+                {BOT_MODE_ENABLED && (
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="mb-12"
+                    >
+                        <div className="bg-hull border-2 border-brass p-8 flex flex-col md:flex-row items-center justify-between gap-6"
+                            style={{ boxShadow: '0 0 40px rgba(184,150,46,0.15), inset 0 0 40px rgba(184,150,46,0.05)' }}>
+                            <div>
+                                <h2 className="font-display text-brass text-3xl tracking-widest mb-2">INSTANT BATTLE</h2>
+                                <p className="font-mono text-smoke text-sm leading-relaxed max-w-xl">
+                                    Play against the <span className="text-brass font-bold">Phantom AI</span> — no opponent needed.<br />
+                                    Full ZK proof generation. Local Poseidon commitment. Immediate gameplay.
+                                </p>
+                                <p className="font-mono text-haze-gray text-xs mt-2">
+                                    Bot fleet is committed locally with the same Poseidon hash as on-chain players.
+                                </p>
+                            </div>
+                            <button
+                                onClick={handlePlayVsBot}
+                                className="bg-brass text-abyss font-sans font-bold text-xl tracking-wider py-5 px-12 hover:brightness-110 transition-all whitespace-nowrap"
+                                style={{ boxShadow: '0 4px 16px rgba(184,150,46,0.3)' }}
+                            >
+                                <svg className="w-4 h-4 mr-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                                </svg>
+                                PLAY VS BOT
+                            </button>
                         </div>
-                        <button
-                            onClick={handlePlayVsBot}
-                            className="bg-brass text-abyss font-sans font-bold text-xl tracking-wider py-5 px-12 hover:brightness-110 transition-all whitespace-nowrap"
-                            style={{ boxShadow: '0 4px 16px rgba(184,150,46,0.3)' }}
-                        >
-                            ⚡ PLAY VS BOT
-                        </button>
-                    </div>
-                </motion.div>
+                    </motion.div>
+                )}
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-12 lg:gap-24 flex-1">
 

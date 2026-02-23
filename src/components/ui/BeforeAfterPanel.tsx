@@ -22,7 +22,13 @@ export function BeforeAfterPanel() {
           </div>
         </div>
         <div className="h-[1px] w-full bg-ocean-gray/50 mb-4"></div>
-        <div className="font-mono text-signal-red text-[0.8rem]">✕ NOT FEASIBLE</div>
+        <div className="font-mono text-signal-red text-[0.8rem] flex items-center gap-1">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+          NOT FEASIBLE
+        </div>
       </div>
 
       {/* AFTER Panel */}
@@ -56,12 +62,12 @@ export function BeforeAfterPanel() {
       {/* Code Snippet */}
       <div className="bg-hull border-l-[3px] border-brass p-4 mt-2">
         <pre className="font-mono text-[0.7rem] text-radar overflow-x-auto">
-<code className="text-haze-gray">// The line that changed everything
+          <code className="text-haze-gray">// The line that changed everything
 // Soroban Protocol 25 — BN254 native precompile</code>
-<br/>
-env.crypto().bn254_pairing_check(proof, public_inputs)
-<br/>
-<code className="text-haze-gray">// Single host function. Constant cost. Zero trust.</code>
+          <br />
+          env.crypto().bn254_pairing_check(proof, public_inputs)
+          <br />
+          <code className="text-haze-gray">// Single host function. Constant cost. Zero trust.</code>
         </pre>
       </div>
     </div>

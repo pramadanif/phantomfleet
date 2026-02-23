@@ -2,8 +2,7 @@
  * ZK Proof Utilities for Phantom Fleet
  *
  * Uses real Poseidon BN254 hash via circomlibjs (same as Noir circuit).
- * Proof generation uses @noir-lang/noir_js + Barretenberg backend.
- * No mocks. Production-ready.
+ * Proof generation for gameplay is handled by Circom worker.
  */
 
 // @ts-expect-error - circomlibjs has no types
@@ -15,21 +14,6 @@ export interface MerkleTree {
     root: string;
     layers: string[][];
     leaves: string[];
-}
-
-export interface ShotWitness {
-    shipGrid: number[];
-    merklePath: string[];
-    targetX: number;
-    targetY: number;
-    closestShipX: number;
-    closestShipY: number;
-    layoutNonce: string; // always a hex Field string like "0xabc..." or decimal bigint string
-}
-
-export interface ZKProof {
-    proof: string;
-    publicInputs: string[];
 }
 
 // -- Poseidon Hash (Real BN254) --------------------------------------
@@ -201,112 +185,4 @@ export function findClosestShip(
     return closest;
 }
 
-/**
- * Generate a real ZK proof using Noir circuit + Barretenberg backend.
- * Public inputs order: [commitment, targetX, targetY, minDist, maxDist, isHit]
- *
- * If Noir circuit is not available (ACIR not compiled), falls back to
- * a placeholder proof so VS-BOT mode still works without wallet/Soroban.
- */
-export async function generateShotProof(witness: ShotWitness): Promise<ZKProof> {
-    const targetIndex = witness.targetY * 6 + witness.targetX;
-    const isHit = witness.shipGrid[targetIndex] === 1;
 
-    let minDist = 0;
-    let maxDist = 0;
-    if (!isHit) {
-        const closest = findClosestShip(witness.shipGrid, witness.targetX, witness.targetY);
-        minDist = closest.distance;
-        maxDist = closest.distance;
-    }
-
-    const commitment = await computeCommitment(witness.shipGrid, witness.layoutNonce);
-
-    // Load Noir circuit and generate real proof
-    let proofHex: string;
-    try {
-        const { Noir } = await import('@noir-lang/noir_js');
-        const { BarretenbergBackend } = await import('@noir-lang/backend_barretenberg');
-
-        // Load compiled circuit artifact from /public/circuits/
-        const circuitResponse = await fetch('/circuits/phantom_fleet.json');
-        if (!circuitResponse.ok) throw new Error('Circuit artifact not found at /circuits/phantom_fleet.json');
-        const circuit = await circuitResponse.json();
-
-        const backend = new BarretenbergBackend(circuit);
-        const noir = new Noir(circuit);
-
-        // Build Merkle path for closest ship cell
-        const closestIdx = witness.closestShipY * 6 + witness.closestShipX;
-        const { tree } = await buildMerkleTree(witness.shipGrid, witness.layoutNonce);
-        const path = getMerklePath(tree, closestIdx);
-
-        const merklePath: string[][] = path.map((sibling, level) => {
-            const idx = closestIdx >> level;
-            const isRight = idx % 2 === 1;
-            return [sibling, isRight ? '1' : '0'];
-        });
-
-        // Pad merkle path to exactly 6 levels
-        while (merklePath.length < 6) {
-            merklePath.push(['0x0000000000000000000000000000000000000000000000000000000000000000', '0']);
-        }
-        // Truncate to exactly 6 levels
-        merklePath.splice(6);
-
-        // nonce as hex field string (Noir expects 0x-prefixed hex)
-        const nonceHex = '0x' + BigInt(witness.layoutNonce).toString(16).padStart(64, '0');
-
-        const circuitInputs = {
-            ship_grid: witness.shipGrid.map(String),
-            merkle_path: merklePath,
-            closest_ship_x: String(witness.closestShipX),
-            closest_ship_y: String(witness.closestShipY),
-            layout_nonce: nonceHex,
-            target_x: String(witness.targetX),
-            target_y: String(witness.targetY),
-            layout_commitment: commitment,
-            min_dist: String(minDist),
-            max_dist: String(maxDist),
-            is_hit: isHit ? '1' : '0',
-        };
-
-        const { witness: noirWitness } = await noir.execute(circuitInputs);
-        const proof = await backend.generateProof(noirWitness);
-        proofHex = Buffer.from(proof.proof).toString('base64');
-
-        await backend.destroy();
-    } catch (e) {
-        // Fallback: generate structurally valid placeholder proof for VS-BOT mode
-        // This path is taken when: circuit not found, or running in offline mode.
-        // On-chain verification will reject this — only for local bot matches.
-        console.warn('[PhantomFleet] Noir circuit proof unavailable, using placeholder:', e);
-        const data = new TextEncoder().encode(commitment + witness.targetX + witness.targetY + Date.now());
-        const hash = await crypto.subtle.digest('SHA-256', data);
-        const proofBytes = new Uint8Array(256);
-        const hashBytes = new Uint8Array(hash);
-        for (let i = 0; i < 256; i++) proofBytes[i] = hashBytes[i % 32];
-        proofHex = btoa(Array.from(proofBytes).map(b => String.fromCharCode(b)).join(''));
-    }
-
-    return {
-        proof: proofHex,
-        publicInputs: [
-            commitment,
-            witness.targetX.toString(),
-            witness.targetY.toString(),
-            minDist.toString(),
-            maxDist.toString(),
-            isHit ? '1' : '0',
-        ],
-    };
-}
-
-/**
- * Serialize proof for Soroban contract submission.
- */
-export function serializeProof(proof: ZKProof): string {
-    const payload = { pi: proof.proof, pub: proof.publicInputs };
-    const bytes = new TextEncoder().encode(JSON.stringify(payload));
-    return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-}

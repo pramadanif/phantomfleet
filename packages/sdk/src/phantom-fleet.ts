@@ -328,32 +328,11 @@ export class PhantomFleetSDK {
         return BigInt(hex);
     }
 
-    /** Run the Noir prover to generate a Groth16 proof. */
-    private async runNoirProver(inputs: Record<string, any>): Promise<Uint8Array> {
-        // In production, this would use:
-        //   import circuit from '../../circuits/phantom_fleet/target/phantom_fleet.json';
-        //   import { BarretenbergBackend } from '@noir-lang/backend_barretenberg';
-        //   import { Noir } from '@noir-lang/noir_js';
-        //
-        //   const backend = new BarretenbergBackend(circuit);
-        //   const noir = new Noir(circuit, backend);
-        //   const { proof } = await noir.generateProof(inputs);
-        //   return proof;
-
-        // For SDK development: generate a structurally valid proof
-        // that matches the expected 256-byte Groth16 format.
-        const encoder = new TextEncoder();
-        const data = encoder.encode(JSON.stringify(inputs) + Date.now());
-        const hash = await crypto.subtle.digest('SHA-256', data);
-        const hashBytes = new Uint8Array(hash);
-
-        // Groth16 proof: A (64 bytes) + B (128 bytes) + C (64 bytes) = 256 bytes
-        const proof = new Uint8Array(256);
-        for (let i = 0; i < 256; i++) {
-            proof[i] = hashBytes[i % 32];
-        }
-
-        return proof;
+    /** Run the Noir prover to generate a real proof. */
+    private async runNoirProver(_inputs: Record<string, any>): Promise<Uint8Array> {
+        throw new Error(
+            'SDK runNoirProver is disabled: mock proof generation is forbidden. Integrate real Noir proving before calling generateShotProof().'
+        );
     }
 
     /** Generic contract call helper. */
