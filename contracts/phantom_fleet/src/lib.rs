@@ -72,6 +72,13 @@ pub struct PendingShot {
     pub target_y: u32,
 }
 
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct RevealedLayout {
+    pub ship_grid: Vec<u32>,
+    pub layout_nonce: BytesN<32>,
+}
+
 // ─── Storage Keys ──────────────────────────────────────────
 
 #[contracttype]
@@ -79,6 +86,7 @@ pub enum DataKey {
     Game(BytesN<32>),
     ShotHistory(BytesN<32>),
     PendingShot(BytesN<32>),
+    RevealedLayout(BytesN<32>, Address),
 }
 
 // ─── Errors ────────────────────────────────────────────────
@@ -102,6 +110,7 @@ pub enum Error {
     PendingShotExists = 13,
     NoPendingShot = 14,
     GameAlreadyExists = 15,
+    InvalidReveal = 16,
 }
 
 // ─── Contract ──────────────────────────────────────────────
@@ -673,6 +682,77 @@ impl PhantomFleetContract {
             .persistent()
             .get(&DataKey::PendingShot(game_id))
             .unwrap_or_else(|| env.panic_with_error(Error::NoPendingShot))
+    }
+
+    pub fn reveal_layout(
+        env: Env,
+        game_id: BytesN<32>,
+        player: Address,
+        ship_grid: Vec<u32>,
+        layout_nonce: BytesN<32>,
+    ) {
+        player.require_auth();
+
+        let state: GameState = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Game(game_id.clone()))
+            .unwrap_or_else(|| env.panic_with_error(Error::GameNotFound));
+
+        if state.status != GameStatus::Finished {
+            env.panic_with_error(Error::InvalidStatus);
+        }
+
+        if player != state.player1 && player != state.player2 {
+            env.panic_with_error(Error::InvalidPlayer);
+        }
+
+        if ship_grid.len() != 36 {
+            env.panic_with_error(Error::InvalidReveal);
+        }
+
+        let mut ship_count = 0u32;
+        for i in 0..ship_grid.len() {
+            let value = ship_grid.get(i).unwrap_or(2);
+            if value > 1 {
+                env.panic_with_error(Error::InvalidReveal);
+            }
+            ship_count += value;
+        }
+
+        if ship_count != TOTAL_SHIP_CELLS {
+            env.panic_with_error(Error::InvalidReveal);
+        }
+
+        let revealed = RevealedLayout {
+            ship_grid: ship_grid.clone(),
+            layout_nonce,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::RevealedLayout(game_id.clone(), player.clone()), &revealed);
+        env.storage().persistent().extend_ttl(
+            &DataKey::RevealedLayout(game_id.clone(), player.clone()),
+            10_000,
+            10_000,
+        );
+
+        env.events()
+            .publish((symbol_short!("reveal"), game_id), player);
+    }
+
+    pub fn has_revealed_layout(env: Env, game_id: BytesN<32>, player: Address) -> bool {
+        env.storage()
+            .persistent()
+            .has(&DataKey::RevealedLayout(game_id, player))
+    }
+
+    pub fn get_revealed_layout(env: Env, game_id: BytesN<32>, player: Address) -> RevealedLayout {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RevealedLayout(game_id, player))
+            .unwrap_or_else(|| env.panic_with_error(Error::InvalidReveal))
     }
 
     fn hub_start_game(env: &Env, session_id: u32, player1: Address, player2: Address) {

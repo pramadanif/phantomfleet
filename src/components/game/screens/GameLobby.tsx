@@ -7,7 +7,7 @@ import { useGame } from '../GameContext';
 import { callStartGame, EXPLORER_BASE } from '../../../utils/stellar';
 
 export function GameLobby() {
-    const BOT_MODE_ENABLED = process.env.NEXT_PUBLIC_ENABLE_BOT_MODE === '1';
+    const BOT_MODE_ENABLED = process.env.NEXT_PUBLIC_ENABLE_BOT_MODE !== '0';
     const { wallet, account, setScreen, setGameId, gameId, setGlobalError, setIsBotGame } = useGame();
     const [createdGameId, setCreatedGameId] = useState<string | null>(null);
     const [joinInput, setJoinInput] = useState('');
@@ -16,15 +16,29 @@ export function GameLobby() {
 
     const walletAddress = wallet?.address || '';
 
-    const handlePlayVsBot = () => {
+    const handlePlayVsBot = async () => {
         if (!BOT_MODE_ENABLED) {
             setGlobalError('Bot mode is disabled in strict production mode. Use on-chain PvP flow.');
             return;
         }
-        const botGameId = 'BOT-' + Math.random().toString(36).substring(2, 8).toUpperCase();
-        setGameId(botGameId);
-        setIsBotGame(true);
-        setScreen('PLACEMENT');
+        if (!walletAddress) {
+            setGlobalError('Connect wallet first.');
+            return;
+        }
+
+        setIsDeploying(true);
+        try {
+            const botGameId = 'BOT-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+            const result = await callStartGame(walletAddress, walletAddress, walletAddress, botGameId);
+            setDeployTx(result.txHash);
+            setGameId(botGameId);
+            setIsBotGame(true);
+            setScreen('PLACEMENT');
+        } catch (err: any) {
+            setGlobalError('Failed to start on-chain bot game: ' + (err.message || 'Unknown error'));
+        } finally {
+            setIsDeploying(false);
+        }
     };
 
     const handleCreateGame = async () => {
@@ -79,22 +93,21 @@ export function GameLobby() {
                             <div>
                                 <h2 className="font-display text-brass text-3xl tracking-widest mb-2">INSTANT BATTLE</h2>
                                 <p className="font-mono text-smoke text-sm leading-relaxed max-w-xl">
-                                    Play against the <span className="text-brass font-bold">Phantom AI</span> — no opponent needed.<br />
-                                    Full ZK proof generation. Local Poseidon commitment. Immediate gameplay.
+                                    Play against the <span className="text-brass font-bold">Phantom AI</span> in a real on-chain game.<br />
+                                    Bot moves are signed server-side and resolved on Stellar Testnet.
                                 </p>
                                 <p className="font-mono text-haze-gray text-xs mt-2">
-                                    Bot fleet is committed locally with the same Poseidon hash as on-chain players.
+                                    Uses same `fire_shot` → `resolve_shot` protocol as PvP.
                                 </p>
                             </div>
                             <button
+                                type="button"
                                 onClick={handlePlayVsBot}
+                                disabled={isDeploying}
                                 className="bg-brass text-abyss font-sans font-bold text-xl tracking-wider py-5 px-12 hover:brightness-110 transition-all whitespace-nowrap"
                                 style={{ boxShadow: '0 4px 16px rgba(184,150,46,0.3)' }}
                             >
-                                <svg className="w-4 h-4 mr-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
-                                </svg>
-                                PLAY VS BOT
+                                {isDeploying ? 'DEPLOYING...' : 'PLAY VS BOT'}
                             </button>
                         </div>
                     </motion.div>
@@ -114,6 +127,7 @@ export function GameLobby() {
 
                             {!createdGameId ? (
                                 <button
+                                    type="button"
                                     onClick={handleCreateGame}
                                     disabled={isDeploying}
                                     className="bg-brass text-abyss font-sans font-bold text-lg tracking-wider py-4 px-8 mt-auto self-start hover:brightness-110 transition-all disabled:opacity-50 disabled:cursor-wait"
@@ -131,6 +145,7 @@ export function GameLobby() {
                                         {createdGameId}
                                     </div>
                                     <button
+                                        type="button"
                                         onClick={handleEnterLobby}
                                         className="text-smoke hover:text-brass font-mono text-sm underline underline-offset-4"
                                     >

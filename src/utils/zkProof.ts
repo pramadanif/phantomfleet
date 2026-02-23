@@ -5,7 +5,6 @@
  * Proof generation for gameplay is handled by Circom worker.
  */
 
-// @ts-expect-error - circomlibjs has no types
 import { buildPoseidon } from 'circomlibjs';
 
 // -- Types -----------------------------------------------------------

@@ -16,7 +16,7 @@ export const GAME_HUB_CONTRACT = 'CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MR
 export const EXPLORER_BASE = 'https://stellar.expert/explorer/testnet/tx/';
 
 /** PhantomFleet contract address — deployed on Stellar Testnet. */
-export let PHANTOM_FLEET_CONTRACT = 'CCO5NIUW6B4HPLUUA6YOMNJ6F5OXMUJDUOZQFNAJLKWXWOTVEVL224KQ';
+export let PHANTOM_FLEET_CONTRACT = 'CAN3TAI7W6ASCRCVBRIZFC6YXGZ36PPWWFXDDJS35RJ4JSRZEZT2TWRJ';
 
 /** Set the PhantomFleet contract address (called after deployment). */
 export function setContractAddress(addr: string) {
@@ -118,6 +118,11 @@ export interface OnChainShotResult {
     proximityMax: number;
     proofVerified: boolean;
     txSequence: number;
+}
+
+export interface OnChainRevealedLayout {
+    shipGrid: number[];
+    layoutNonceHex: string;
 }
 
 function mapContractError(simulationError: string): string {
@@ -248,6 +253,11 @@ function fieldStringToBytes32(input: string): Buffer {
     const bigintValue = BigInt(input);
     const hex = bigintValue.toString(16).padStart(64, '0').slice(0, 64);
     return Buffer.from(hex, 'hex');
+}
+
+function bytes32HexToDecimalString(hex: string): string {
+    const clean = hex.toLowerCase().replace(/^0x/, '').padStart(64, '0').slice(0, 64);
+    return BigInt('0x' + clean).toString();
 }
 
 function parseFieldToNumber(input: string): number {
@@ -501,6 +511,76 @@ export async function callGetShotHistory(callerAddress: string, gameId: string):
         proofVerified: Boolean(entry.proof_verified ?? entry.proofVerified ?? false),
         txSequence: Number(entry.tx_sequence ?? entry.txSequence ?? 0),
     }));
+}
+
+export async function callRevealLayout(
+    callerAddress: string,
+    gameId: string,
+    shipGrid: number[],
+    layoutNonce: string
+): Promise<TxResult> {
+    if (shipGrid.length !== 36) {
+        throw new Error('Reveal requires exactly 36 grid cells');
+    }
+
+    const gameIdBytes = stringToGameIdBytes(gameId);
+    const nonceBytes = fieldStringToBytes32(layoutNonce);
+    const gridVals = shipGrid.map((cell) => StellarSdk.nativeToScVal(cell, { type: 'u32' }));
+
+    const args = [
+        StellarSdk.xdr.ScVal.scvBytes(Buffer.from(gameIdBytes)),
+        StellarSdk.nativeToScVal(callerAddress, { type: 'address' }),
+        StellarSdk.xdr.ScVal.scvVec(gridVals),
+        StellarSdk.xdr.ScVal.scvBytes(nonceBytes),
+    ];
+
+    return submitContractCall(callerAddress, PHANTOM_FLEET_CONTRACT, 'reveal_layout', args);
+}
+
+export async function callHasRevealedLayout(
+    callerAddress: string,
+    gameId: string,
+    player: string
+): Promise<boolean> {
+    const gameIdBytes = stringToGameIdBytes(gameId);
+    const native = await simulateReadonlyCall(
+        callerAddress,
+        PHANTOM_FLEET_CONTRACT,
+        'has_revealed_layout',
+        [
+            StellarSdk.xdr.ScVal.scvBytes(Buffer.from(gameIdBytes)),
+            StellarSdk.nativeToScVal(player, { type: 'address' }),
+        ]
+    );
+    return native === true;
+}
+
+export async function callGetRevealedLayout(
+    callerAddress: string,
+    gameId: string,
+    player: string
+): Promise<OnChainRevealedLayout> {
+    const gameIdBytes = stringToGameIdBytes(gameId);
+    const native = await simulateReadonlyCall(
+        callerAddress,
+        PHANTOM_FLEET_CONTRACT,
+        'get_revealed_layout',
+        [
+            StellarSdk.xdr.ScVal.scvBytes(Buffer.from(gameIdBytes)),
+            StellarSdk.nativeToScVal(player, { type: 'address' }),
+        ]
+    );
+
+    const gridRaw: number[] = Array.isArray(native.ship_grid ?? native.shipGrid)
+        ? (native.ship_grid ?? native.shipGrid).map((v: any) => Number(v))
+        : [];
+    const nonceBytes: Uint8Array = native.layout_nonce ?? native.layoutNonce ?? new Uint8Array(32);
+    const nonceHex = Buffer.from(nonceBytes).toString('hex');
+
+    return {
+        shipGrid: gridRaw,
+        layoutNonceHex: bytes32HexToDecimalString(nonceHex),
+    };
 }
 
 export async function callHasVerificationKey(callerAddress: string): Promise<boolean> {

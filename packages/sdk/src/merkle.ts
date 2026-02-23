@@ -8,7 +8,6 @@
 
 import { MerkleTree, TOTAL_CELLS, GRID_SIZE } from './types';
 
-// @ts-expect-error — circomlibjs has no types
 import { buildPoseidon } from 'circomlibjs';
 
 // ─── Poseidon Hash (Real BN254) ────────────────────────────

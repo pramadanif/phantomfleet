@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { buildPoseidon } from 'circomlibjs';
 import * as snarkjs from 'snarkjs';
 
-const CONTRACT_ID = process.env.PHANTOM_FLEET_CONTRACT || 'CCO5NIUW6B4HPLUUA6YOMNJ6F5OXMUJDUOZQFNAJLKWXWOTVEVL224KQ';
+const CONTRACT_ID = process.env.PHANTOM_FLEET_CONTRACT || 'CAN3TAI7W6ASCRCVBRIZFC6YXGZ36PPWWFXDDJS35RJ4JSRZEZT2TWRJ';
 const NETWORK = process.env.STELLAR_NETWORK || 'testnet';
 const SHOOTER_ALIAS_DEFAULT = process.env.BOT_KEY_ALIAS || 'adelanta';
 const DEFENDER_ALIAS_DEFAULT = process.env.DEFENDER_KEY_ALIAS || '';

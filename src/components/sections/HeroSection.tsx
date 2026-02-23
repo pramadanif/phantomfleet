@@ -1,6 +1,9 @@
 "use client";
 
 import { motion } from 'motion/react';
+import Link from 'next/link';
+
+const CONTRACT_EXPLORER = 'https://stellar.expert/explorer/testnet/contract/CAN3TAI7W6ASCRCVBRIZFC6YXGZ36PPWWFXDDJS35RJ4JSRZEZT2TWRJ';
 
 const ShipBlueprint = ({ className, animate, transition }: { className: string, animate: any, transition: any }) => (
   <motion.div 
@@ -137,7 +140,7 @@ export function HeroSection() {
           className="font-sans font-medium text-[1.15rem] text-smoke max-w-[500px] mb-12"
         >
           No server. No referee. No trust required.<br/>
-          Every shot is a cryptographic proof, verified on Stellar in 8 seconds.
+          Every resolved shot is a cryptographic proof, verified on Stellar.
         </motion.p>
 
         {/* CTAs */}
@@ -147,19 +150,23 @@ export function HeroSection() {
           transition={{ delay: 0.7, duration: 0.6 }}
           className="flex flex-col sm:flex-row gap-4 mb-16 w-full sm:w-auto"
         >
-          <motion.button 
+          <motion.div 
             whileHover={{ scale: 1.02, y: -2, boxShadow: '0 8px 24px rgba(184,150,46,0.3)', filter: 'brightness(1.1)' }}
             whileTap={{ scale: 0.98 }}
-            className="bg-brass text-abyss font-sans font-bold text-[1rem] tracking-wider py-4 px-10 transition-colors"
+            className="transition-colors"
           >
-            LAUNCH BATTLE →
-          </motion.button>
-          <motion.button 
+            <Link href="/game" className="block bg-brass text-abyss font-sans font-bold text-[1rem] tracking-wider py-4 px-10">
+              LAUNCH BATTLE →
+            </Link>
+          </motion.div>
+          <motion.div 
             whileHover={{ borderColor: '#B8962E', color: '#B8962E' }}
-            className="bg-transparent border border-ocean-gray text-smoke font-sans font-bold text-[1rem] tracking-wider py-4 px-10 transition-colors"
+            className="transition-colors"
           >
-            VIEW ON STELLAR ↗
-          </motion.button>
+            <a href={CONTRACT_EXPLORER} target="_blank" rel="noopener noreferrer" className="block bg-transparent border border-ocean-gray text-smoke font-sans font-bold text-[1rem] tracking-wider py-4 px-10">
+              VIEW ON STELLAR ↗
+            </a>
+          </motion.div>
         </motion.div>
 
         {/* Proof Ticker */}

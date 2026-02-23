@@ -12,15 +12,6 @@ import {
     callGetPendingShot,
     EXPLORER_BASE,
 } from '../../../utils/stellar';
-import {
-    BOT_FLEET,
-    createBotState,
-    getBotShot,
-    processBotShotResult,
-    processPlayerShotAgainstBot,
-    countBotShipsRemaining,
-    type BotState,
-} from '../../../utils/botEngine';
 import { soundEngine } from '../../../utils/soundEngine';
 
 const TOTAL_SHIP_CELLS = 11;
@@ -51,10 +42,7 @@ export function BattleScreen() {
     const pendingOutgoingCellRef = useRef<number | null>(null);
     const historyLenRef = useRef(0);
 
-    // Bot state
-    const botStateRef = useRef<BotState>(createBotState('NORMAL'));
-    const [playerHitsOnBot, setPlayerHitsOnBot] = useState(0);
-    const [botHitsOnPlayer, setBotHitsOnPlayer] = useState(0);
+    const botTickingRef = useRef(false);
 
     // Initialize Web Worker + Music
     useEffect(() => {
@@ -100,7 +88,7 @@ export function BattleScreen() {
     };
 
     useEffect(() => {
-        if (isBotGame || !wallet?.address || !gameId) return;
+        if (!wallet?.address || !gameId) return;
 
         const syncLoop = async () => {
             try {
@@ -229,55 +217,13 @@ export function BattleScreen() {
         }
     };
 
-    // Bot's turn handler
-    const executeBotTurn = async () => {
-        if (!isBotGame) return;
-
-        await new Promise(r => setTimeout(r, 1200 + Math.random() * 800));
-        soundEngine.play('bot_fire'); // Simulate thinking
-
-        const botShot = getBotShot(botStateRef.current);
-        const shotIndex = botShot.y * 6 + botShot.x;
-        const isHit = shipGrid[shotIndex] === 1;
-
-        // Process the bot's shot result
-        processBotShotResult(botStateRef.current, shotIndex, isHit);
-
-        // Update player's grid
-        setPlayerGrid(prev => ({ ...prev, [shotIndex]: isHit ? 'HIT' : 'MISS' }));
-
-        if (isHit) {
-            soundEngine.play('hit_explosion');
-            const newBotHits = botHitsOnPlayer + 1;
-            setBotHitsOnPlayer(newBotHits);
-
-            // Check if bot wins
-            if (newBotHits >= TOTAL_SHIP_CELLS) {
-                setTimeout(() => {
-                    setEnemyShipGrid([...BOT_FLEET]);
-                    setDidWin(false);
-                    setScreen('GAME_OVER');
-                }, 1500);
-                return;
-            }
-        }
-
-        // Return turn to player
-        setTimeout(() => { setTurn('PLAYER'); }, 800);
-    };
-
     const handleEnemyGridClick = async (index: number) => {
         if (turn !== 'PLAYER' || enemyGrid[index] || generatingProofCell !== null || pendingIncoming !== null) return;
-
-        if (isBotGame) {
-            setGlobalError('Bot mode is disabled in strict production mode. Use on-chain PvP flow.');
-            return;
-        }
 
         const targetX = index % 6;
         const targetY = Math.floor(index / 6);
 
-        if (!isBotGame && wallet?.address && gameId) {
+        if (wallet?.address && gameId) {
             const state = await callGetGameState(wallet.address, gameId);
             if (state.currentTurn !== wallet.address) {
                 setTurn('ENEMY');
@@ -313,18 +259,51 @@ export function BattleScreen() {
         }
     };
 
+    useEffect(() => {
+        if (!isBotGame || !wallet?.address || !gameId) return;
+        if (turn !== 'ENEMY' || pendingIncoming || generatingProofCell !== null) return;
+        if (botTickingRef.current) return;
+
+        botTickingRef.current = true;
+        const runTick = async () => {
+            try {
+                const response = await fetch('/api/bot/onchain', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'tick',
+                        gameId,
+                        playerAddress: wallet.address,
+                    }),
+                });
+                const data = await response.json();
+                if (!response.ok || !data?.ok) {
+                    throw new Error(data?.error || 'Bot tick failed');
+                }
+
+                if (Array.isArray(data.actions) && data.actions.some((a: string) => String(a).startsWith('fired_at_'))) {
+                    soundEngine.play('bot_fire');
+                }
+            } catch (error: any) {
+                setGlobalError(error?.message || 'Failed to advance on-chain bot turn');
+            } finally {
+                botTickingRef.current = false;
+            }
+        };
+
+        void runTick();
+    }, [isBotGame, turn, pendingIncoming, generatingProofCell, wallet?.address, gameId, setGlobalError]);
+
     // Compute remaining ships
-    const myHitsReceived = !isBotGame && chainState && wallet?.address
+    const myHitsReceived = chainState && wallet?.address
         ? (chainState.player1 === wallet.address ? chainState.p1HitsReceived : chainState.p2HitsReceived)
-        : botHitsOnPlayer;
-    const enemyHitsReceived = !isBotGame && chainState && wallet?.address
+        : 0;
+    const enemyHitsReceived = chainState && wallet?.address
         ? (chainState.player1 === wallet.address ? chainState.p2HitsReceived : chainState.p1HitsReceived)
-        : playerHitsOnBot;
+        : 0;
 
     const playerShipsRemaining = TOTAL_SHIP_CELLS - myHitsReceived;
-    const enemyShipsRemaining = isBotGame
-        ? countBotShipsRemaining(new Set(Object.entries(enemyGrid).filter(([_, v]) => v === 'HIT').map(([k]) => Number(k))))
-        : TOTAL_SHIP_CELLS - enemyHitsReceived;
+    const enemyShipsRemaining = TOTAL_SHIP_CELLS - enemyHitsReceived;
 
     const renderYourWaters = () => {
         const cells = [];

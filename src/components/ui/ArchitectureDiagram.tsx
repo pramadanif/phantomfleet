@@ -29,14 +29,14 @@ export function ArchitectureDiagram() {
           </div>
         </div>
 
-        {/* Column 2: NOIR CIRCUIT */}
+        {/* Column 2: CIRCOM + SNARKJS */}
         <div className="w-[220px] flex flex-col gap-8 relative z-10 mt-[120px]">
           <div className="font-sans font-bold text-brass uppercase tracking-wider border-b border-brass pb-2 mb-4">
-            [ NOIR CIRCUIT ]
+            [ CIRCOM + SNARKJS ]
           </div>
           
           <div className="bg-hull border border-ocean-gray p-4">
-            <div className="font-sans font-semibold text-chalk mb-2">Generate Proof</div>
+            <div className="font-sans font-semibold text-chalk mb-2">Generate Resolve Proof</div>
             <div className="font-mono text-[0.7rem] text-smoke">(~8 seconds)</div>
             <div className="font-mono text-[0.7rem] text-smoke mt-1">Groth16/BN254</div>
           </div>
@@ -54,7 +54,7 @@ export function ArchitectureDiagram() {
           </div>
 
           <div className="bg-hull border border-ocean-gray p-4 mt-[104px]">
-            <div className="font-sans font-semibold text-chalk mb-2">bn254_pairing_check()</div>
+            <div className="font-sans font-semibold text-chalk mb-2">fire_shot() + resolve_shot()</div>
             <div className="font-mono text-[0.7rem] text-smoke">update game state</div>
           </div>
 

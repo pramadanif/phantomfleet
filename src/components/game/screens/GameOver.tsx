@@ -2,14 +2,23 @@
 
 import { motion } from 'motion/react';
 import { useGame } from '../GameContext';
-import { EXPLORER_BASE } from '../../../utils/stellar';
-import { useState, useEffect } from 'react';
+import {
+    EXPLORER_BASE,
+    callRevealLayout,
+    callGetGameState,
+    callHasRevealedLayout,
+    callGetRevealedLayout,
+} from '../../../utils/stellar';
+import { useState, useEffect, useRef } from 'react';
 import { soundEngine } from '../../../utils/soundEngine';
+import { computeCommitment } from '../../../utils/zkProof';
 
 export function GameOver() {
-    const { didWin, setScreen, setGameId, wallet, gameId, setLastTx, shotsFired, playerHits, isBotGame, enemyShipGrid } = useGame();
+    const { didWin, setScreen, setGameId, wallet, gameId, setLastTx, shotsFired, playerHits, isBotGame, enemyShipGrid, setEnemyShipGrid, shipGrid, layoutNonce } = useGame();
     const [endGameTx] = useState<string | null>(null);
     const [revealStep, setRevealStep] = useState(0);
+    const [revealStatus, setRevealStatus] = useState<string>('PUBLISHING YOUR REVEAL...');
+    const revealFlowStartedRef = useRef<string | null>(null);
 
     const resultText = didWin ? "VICTORY" : "DEFEATED";
     const subText = didWin
@@ -39,6 +48,94 @@ export function GameOver() {
         }, 80);
         return () => clearInterval(timer);
     }, []);
+
+    useEffect(() => {
+        if (!wallet?.address || !gameId) return;
+
+        const runKey = `${wallet.address}:${gameId}`;
+        if (revealFlowStartedRef.current === runKey) return;
+        revealFlowStartedRef.current = runKey;
+
+        let cancelled = false;
+
+        const runRevealFlow = async () => {
+            try {
+                setRevealStatus('PUBLISHING YOUR REVEAL...');
+                try {
+                    await callRevealLayout(wallet.address, gameId, shipGrid, layoutNonce);
+                } catch (err: any) {
+                    const msg = String(err?.message || err);
+                    if (!msg.includes('AlreadyRevealed') && !msg.includes('#14')) {
+                        throw err;
+                    }
+                }
+
+                if (isBotGame) {
+                    const botRevealRes = await fetch('/api/bot/onchain', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            action: 'reveal',
+                            gameId,
+                            playerAddress: wallet.address,
+                        }),
+                    });
+                    const botRevealData = await botRevealRes.json();
+                    if (!botRevealRes.ok || !botRevealData?.ok) {
+                        throw new Error(botRevealData?.error || 'Failed to trigger bot reveal');
+                    }
+                }
+
+                setRevealStatus('WAITING FOR OPPONENT REVEAL...');
+
+                const maxAttempts = 60;
+                for (let attempt = 0; attempt < maxAttempts; attempt++) {
+                    if (cancelled) return;
+
+                    const state = await callGetGameState(wallet.address, gameId);
+                    const candidates = [state.player1, state.player2]
+                        .filter((address) => !!address && address !== wallet.address);
+
+                    for (const opponentAddress of candidates) {
+                        const hasReveal = await callHasRevealedLayout(wallet.address, gameId, opponentAddress);
+                        if (!hasReveal) continue;
+
+                        const opponentCommitment = (
+                            opponentAddress === state.player1 ? state.p1Commitment : state.p2Commitment
+                        )
+                            .toLowerCase()
+                            .replace(/^0x/, '');
+
+                        const revealed = await callGetRevealedLayout(wallet.address, gameId, opponentAddress);
+                        const recomputed = (await computeCommitment(revealed.shipGrid, revealed.layoutNonceHex))
+                            .toLowerCase()
+                            .replace(/^0x/, '');
+
+                        if (recomputed === opponentCommitment) {
+                            setEnemyShipGrid(revealed.shipGrid);
+                            setRevealStatus('REVEAL VERIFIED');
+                        } else {
+                            setRevealStatus('REVEAL RECEIVED BUT COMMITMENT MISMATCH');
+                        }
+                        return;
+                    }
+
+                    await new Promise((resolve) => setTimeout(resolve, 2000));
+                }
+
+                setRevealStatus('OPPONENT HAS NOT REVEALED YET');
+            } catch (err: any) {
+                if (!cancelled) {
+                    setRevealStatus(`REVEAL ERROR: ${err?.message || 'unknown'}`);
+                }
+            }
+        };
+
+        runRevealFlow();
+        return () => {
+            cancelled = true;
+        };
+    }, [isBotGame, wallet?.address, gameId, shipGrid, layoutNonce, setEnemyShipGrid]);
 
     const handlePlayAgain = () => {
         setGameId(null);
@@ -99,6 +196,9 @@ export function GameOver() {
                     <p className="font-mono text-[0.6rem] text-haze-gray mt-4 tracking-widest">
                         LAYOUT WAS PRIVATE UNTIL NOW — VERIFIED BY ZK PROOF
                     </p>
+                    <p className="font-mono text-[0.6rem] text-radar mt-2 tracking-widest">
+                        {revealStatus}
+                    </p>
                 </div>
 
                 {/* STATS */}
@@ -125,7 +225,7 @@ export function GameOver() {
                 <div className="flex flex-col items-center gap-8">
                     <div className="font-mono text-radar text-sm tracking-widest flex items-center gap-2 px-6 py-2 border border-radar/50 bg-radar/10">
                         <motion.div animate={{ opacity: [1, 0.3, 1] }} transition={{ duration: 1.2, repeat: Infinity }} className="w-2 h-2 rounded-full bg-radar" />
-                        {isBotGame ? 'GAME COMPLETED LOCALLY' : 'GAME SEALED ON STELLAR'}
+                        GAME SEALED ON STELLAR
                     </div>
 
                     {endGameTx && (

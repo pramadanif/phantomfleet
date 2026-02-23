@@ -105,10 +105,6 @@ export function ShipPlacement() {
     const handleSeal = async () => {
         setIsSealing(true);
         try {
-            if (isBotGame) {
-                throw new Error('Bot mode is disabled in strict production mode. Use on-chain PvP flow.');
-            }
-
             // 1. Convert placed ships to flat grid
             const grid = new Array(36).fill(0);
             Object.values(placedShips).forEach(ship => {
@@ -143,6 +139,20 @@ export function ShipPlacement() {
 
             setLastTx(txResult);
             setSealedTx(txResult.txHash);
+
+            if (isBotGame) {
+                setSealStatus('REQUESTING ON-CHAIN BOT COMMITMENT...');
+                const botRes = await fetch('/api/bot/onchain', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'commit', gameId, playerAddress: wallet.address }),
+                });
+                const botJson = await botRes.json();
+                if (!botRes.ok || !botJson?.ok) {
+                    throw new Error(botJson?.error || 'Bot commit failed');
+                }
+            }
+
             setSealStatus('AWAITING OPPONENT COMMITMENT...');
 
             await waitForGameActive(wallet.address, gameId);
@@ -218,12 +228,14 @@ export function ShipPlacement() {
 
                         <div className="flex bg-hull border border-ocean-gray p-1 mb-4">
                             <button
+                                type="button"
                                 onClick={() => setOrientation('HORIZONTAL')}
                                 className={`flex-1 font-mono text-xs py-2 transition-colors ${orientation === 'HORIZONTAL' ? 'bg-brass text-abyss' : 'text-smoke'}`}
                             >
                                 HORIZONTAL
                             </button>
                             <button
+                                type="button"
                                 onClick={() => setOrientation('VERTICAL')}
                                 className={`flex-1 font-mono text-xs py-2 transition-colors ${orientation === 'VERTICAL' ? 'bg-brass text-abyss' : 'text-smoke'}`}
                             >
@@ -238,6 +250,7 @@ export function ShipPlacement() {
                                 return (
                                     <button
                                         key={ship.id}
+                                        type="button"
                                         onClick={() => !isPlaced && setSelectedShip(isSelected ? null : ship.id)}
                                         disabled={isPlaced}
                                         className={`
@@ -271,6 +284,7 @@ export function ShipPlacement() {
                         <div className="mt-8">
                             {!sealedTx ? (
                                 <button
+                                    type="button"
                                     onClick={handleSeal}
                                     disabled={!allPlaced || isSealing}
                                     className={`

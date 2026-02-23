@@ -24,7 +24,7 @@ export function ArchitectureSection() {
         <ArchitectureDiagram />
 
         <div className="flex flex-wrap justify-center gap-4 mt-12">
-          {['POSEIDON HASH · COMMITMENT SCHEME', 'GROTH16 · PROOF SYSTEM', 'BN254 · STELLAR NATIVE'].map((pill, i) => (
+          {['POSEIDON HASH · COMMITMENT SCHEME', 'CIRCOM/SNARKJS · GROTH16', 'FIRE/RESOLVE · TWO-PHASE PROTOCOL'].map((pill, i) => (
             <div key={i} className="bg-hull border border-brass px-4 py-2 font-mono text-[0.65rem] text-brass">
               [ {pill} ]
             </div>

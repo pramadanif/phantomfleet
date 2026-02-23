@@ -7,8 +7,6 @@
  *     |  { type: 'PROOF_ERROR', error: string }
  *   OUT: { type: 'PROOF_PROGRESS', percent: number }
  */
-
-// @ts-expect-error — circomlibjs has no types
 import { buildPoseidon } from 'circomlibjs';
 
 interface ShotWitness {
@@ -17,7 +15,6 @@ interface ShotWitness {
     targetY: number;
     layoutNonce: string;
 }
-
 interface ZKProof {
     proof: string; // base64, raw 256-byte Groth16 proof
     publicInputs: string[];

@@ -55,7 +55,7 @@ Protocol 25 ([CAP-0074](https://github.com/stellar/stellar-protocol/blob/master/
 
 | Contract | Address | Explorer |
 |---|---|---|
-| Phantom Fleet | `CCO5NIUW6B4HPLUUA6YOMNJ6F5OXMUJDUOZQFNAJLKWXWOTVEVL224KQ` | [View](https://stellar.expert/explorer/testnet/contract/CCO5NIUW6B4HPLUUA6YOMNJ6F5OXMUJDUOZQFNAJLKWXWOTVEVL224KQ) |
+| Phantom Fleet | `CAN3TAI7W6ASCRCVBRIZFC6YXGZ36PPWWFXDDJS35RJ4JSRZEZT2TWRJ` | [View](https://stellar.expert/explorer/testnet/contract/CAN3TAI7W6ASCRCVBRIZFC6YXGZ36PPWWFXDDJS35RJ4JSRZEZT2TWRJ) |
 | Game Hub | `CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG` | [View](https://stellar.expert/explorer/testnet/contract/CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG) |
 
 ## Running Locally
@@ -94,6 +94,29 @@ npm install
 npm run dev
 # Open http://localhost:3000/game
 ```
+
+### Deploy to Vercel
+
+This project is deployable to Vercel with the current architecture.
+
+Required environment variables:
+
+```bash
+PHANTOM_BOT_SECRET_KEY=<stellar secret for bot wallet>
+```
+
+Recommended environment variables:
+
+```bash
+PHANTOM_FLEET_CONTRACT=CAN3TAI7W6ASCRCVBRIZFC6YXGZ36PPWWFXDDJS35RJ4JSRZEZT2TWRJ
+PHANTOM_BOT_NONCE_SALT=phantomfleet-bot
+NEXT_PUBLIC_ENABLE_BOT_MODE=1
+```
+
+Notes:
+- `/api/bot/onchain` runs in Node runtime and signs bot transactions server-side.
+- Keep `public/circuits/circom/phantom_fleet.wasm` and `public/circuits/circom/circuit_final.zkey` in the repo so Vercel server runtime can access them.
+- Never expose `PHANTOM_BOT_SECRET_KEY` to client-side (`NEXT_PUBLIC_*`) variables.
 
 ### Run Integration Test
 

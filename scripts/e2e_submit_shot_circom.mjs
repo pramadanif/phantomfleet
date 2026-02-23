@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { buildPoseidon } from 'circomlibjs';
 
-const CONTRACT_ID = process.env.PHANTOM_FLEET_CONTRACT || 'CCO5NIUW6B4HPLUUA6YOMNJ6F5OXMUJDUOZQFNAJLKWXWOTVEVL224KQ';
+const CONTRACT_ID = process.env.PHANTOM_FLEET_CONTRACT || 'CAN3TAI7W6ASCRCVBRIZFC6YXGZ36PPWWFXDDJS35RJ4JSRZEZT2TWRJ';
 const NETWORK = process.env.STELLAR_NETWORK || 'testnet';
 const SOURCE_ALIAS = process.env.STELLAR_KEY_ALIAS || 'adelanta';
 const OPPONENT_ALIAS = process.env.OPPONENT_KEY_ALIAS || 'phantom-opponent';

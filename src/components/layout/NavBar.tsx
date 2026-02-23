@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
+import Link from 'next/link';
 import { soundEngine } from '../../utils/soundEngine';
 
 export function NavBar() {
@@ -58,6 +59,7 @@ export function NavBar() {
 
         <div className="flex items-center gap-4">
           <button
+            type="button"
             onClick={toggleMute}
             className="text-brass/70 hover:text-brass transition-colors p-2"
             title={isMuted ? "Unmute Sound" : "Mute Sound"}
@@ -76,9 +78,9 @@ export function NavBar() {
             )}
           </button>
 
-          <button className="border border-brass text-brass bg-transparent hover:bg-brass hover:text-abyss font-sans font-bold text-[0.8rem] tracking-wider py-2 px-5 transition-all">
+          <Link href="/game" className="border border-brass text-brass bg-transparent hover:bg-brass hover:text-abyss font-sans font-bold text-[0.8rem] tracking-wider py-2 px-5 transition-all">
             LAUNCH GAME →
-          </button>
+          </Link>
         </div>
       </div>
     </motion.nav>
