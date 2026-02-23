@@ -19,10 +19,11 @@ import { soundEngine } from '../../../utils/soundEngine';
 const TOTAL_SHIP_CELLS = 11;
 
 export function BattleScreen() {
-    const { wallet, gameId, shipGrid, layoutNonce, setScreen, setDidWin, setGlobalError, setLastTx, isBotGame, setShotsFired, shotsFired, setPlayerHits, playerHits } = useGame();
+    const { wallet, gameId, shipGrid, layoutNonce, setScreen, setDidWin, setGlobalError, setLastTx, isBotGame, setShotsFired, shotsFired, setPlayerHits, playerHits, setEnemyShipGrid } = useGame();
 
     const [turn, setTurn] = useState<'PLAYER' | 'ENEMY'>('PLAYER');
     const [enemyGrid, setEnemyGrid] = useState<Record<number, 'MISS' | 'HIT'>>({});
+    const [enemyCellDist, setEnemyCellDist] = useState<Record<number, number>>({});
     const [playerGrid, setPlayerGrid] = useState<Record<number, 'MISS' | 'HIT'>>({});
     const [generatingProofCell, setGeneratingProofCell] = useState<number | null>(null);
     const [proofProgress, setProofProgress] = useState(0);
@@ -74,6 +75,7 @@ export function BattleScreen() {
             // Check if bot wins
             if (newBotHits >= TOTAL_SHIP_CELLS) {
                 setTimeout(() => {
+                    setEnemyShipGrid([...BOT_FLEET]);
                     setDidWin(false);
                     setScreen('GAME_OVER');
                 }, 1500);
@@ -112,6 +114,9 @@ export function BattleScreen() {
                 setProofProgress(0);
 
                 setEnemyGrid(prev => ({ ...prev, [index]: result.isHit ? 'HIT' : 'MISS' }));
+                if (!result.isHit) {
+                    setEnemyCellDist(prev => ({ ...prev, [index]: result.distance }));
+                }
                 soundEngine.play('proof_complete');
 
                 if (result.isHit) {
@@ -125,6 +130,7 @@ export function BattleScreen() {
                     // Check if player wins
                     if (newHits >= TOTAL_SHIP_CELLS) {
                         setTimeout(() => {
+                            setEnemyShipGrid([...BOT_FLEET]);
                             setDidWin(true);
                             setScreen('GAME_OVER');
                         }, 1500);
@@ -264,7 +270,29 @@ export function BattleScreen() {
                 >
                     {colLabel && <div className="absolute -top-6 left-1/2 -translate-x-1/2 font-mono text-[0.65rem] text-haze-gray">{colLabel}</div>}
                     {rowLabel && <div className="absolute -left-6 top-1/2 -translate-y-1/2 font-mono text-[0.65rem] text-haze-gray">{rowLabel}</div>}
-                    {state === 'MISS' && <div className="absolute inset-0 flex items-center justify-center text-haze-gray font-bold">●</div>}
+                    {state === 'MISS' && (
+                        <>
+                            {/* Proximity rings */}
+                            {(() => {
+                                const dist = enemyCellDist[i];
+                                const ringColor = dist !== undefined && dist <= 2 ? 'rgba(255,107,53,0.6)' : dist !== undefined && dist <= 4 ? 'rgba(255,193,7,0.5)' : 'rgba(100,149,237,0.4)';
+                                const ringCount = dist !== undefined && dist <= 2 ? 3 : dist !== undefined && dist <= 4 ? 2 : 1;
+                                return Array.from({ length: ringCount }).map((_, r) => (
+                                    <motion.div
+                                        key={`ring-${i}-${r}`}
+                                        initial={{ opacity: 0.8, scale: 0.5 }}
+                                        animate={{ opacity: [0.6, 0.15, 0.6], scale: 1 + (r + 1) * 0.7 }}
+                                        transition={{ duration: 2 + r * 0.5, repeat: Infinity, ease: 'easeInOut' }}
+                                        className="absolute inset-0 rounded-full border-2 pointer-events-none"
+                                        style={{ borderColor: ringColor }}
+                                    />
+                                ));
+                            })()}
+                            <div className="absolute inset-0 flex items-center justify-center font-bold" style={{
+                                color: enemyCellDist[i] !== undefined && enemyCellDist[i] <= 2 ? '#FF6B35' : enemyCellDist[i] !== undefined && enemyCellDist[i] <= 4 ? '#FFC107' : '#6495ED'
+                            }}>●</div>
+                        </>
+                    )}
                     {state === 'HIT' && <div className="absolute inset-0 flex items-center justify-center text-signal-red font-bold text-xl" style={{ filter: 'drop-shadow(0 0 8px rgba(192,57,43,0.8))' }}>✕</div>}
                     {isGenerating && (
                         <motion.div initial={{ opacity: 0 }} animate={{ opacity: [0.5, 1, 0.5] }} transition={{ duration: 1.2, repeat: Infinity }} className="absolute inset-0 flex items-center justify-center text-radar font-bold text-sm">⚡</motion.div>
@@ -302,8 +330,6 @@ export function BattleScreen() {
 
                     <div className="font-mono text-haze-gray text-[0.65rem] flex gap-2">
                         {isBotGame && <span className="px-2 py-1 bg-brass/10 border border-brass/30 text-brass">VS BOT</span>}
-                        <button onClick={() => { setDidWin(true); setScreen('GAME_OVER'); }} className="px-2 py-1 bg-abyss border border-ocean-gray hover:text-smoke">DEBUG: WIN</button>
-                        <button onClick={() => { setDidWin(false); setScreen('GAME_OVER'); }} className="px-2 py-1 bg-abyss border border-ocean-gray hover:text-smoke">DEBUG: LOSE</button>
                     </div>
                 </div>
 

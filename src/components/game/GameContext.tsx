@@ -1,7 +1,8 @@
 "use client";
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { connectWallet as stellarConnect, getAccount, type WalletInfo, type AccountInfo, type TxResult, EXPLORER_BASE } from '../../utils/stellar';
+import { connectWallet as stellarConnect, getAccount, fundAccountViaFriendbot, type WalletInfo, type AccountInfo, type TxResult, EXPLORER_BASE } from '../../utils/stellar';
+import { generateNonce } from '../../utils/zkProof';
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -43,6 +44,10 @@ export interface GameContextType {
     playerHits: number;
     setPlayerHits: (n: number) => void;
 
+    // Enemy fleet (for game-over reveal)
+    enemyShipGrid: number[];
+    setEnemyShipGrid: (g: number[]) => void;
+
     // Error handling
     globalError: string | null;
     setGlobalError: (e: string | null) => void;
@@ -66,7 +71,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
 
     // Ship layout
     const [shipGrid, setShipGrid] = useState<number[]>(new Array(36).fill(0));
-    const [layoutNonce, setLayoutNonce] = useState<string>(crypto.randomUUID());
+    const [layoutNonce, setLayoutNonce] = useState<string>(() => generateNonce());
 
     // Transaction tracking
     const [lastTx, setLastTx] = useState<TxResult | null>(null);
@@ -77,6 +82,9 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     // Stats
     const [shotsFired, setShotsFired] = useState(0);
     const [playerHits, setPlayerHits] = useState(0);
+
+    // Enemy fleet (for game-over reveal)
+    const [enemyShipGrid, setEnemyShipGrid] = useState<number[]>(new Array(36).fill(0));
 
     // Error handling
     const [globalError, setGlobalError] = useState<string | null>(null);
@@ -111,13 +119,25 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
             const info = await stellarConnect();
             setWallet(info);
 
-            // Fetch account balance
+            // Fetch account balance — auto-fund via Friendbot if XLM is 0
             try {
                 const acct = await getAccount(info.address);
                 setAccount(acct);
+                if (parseFloat(acct.balanceXLM) === 0) {
+                    // Attempt Friendbot funding (testnet only)
+                    await fundAccountViaFriendbot(info.address).catch(() => { });
+                    const funded = await getAccount(info.address);
+                    setAccount(funded);
+                }
             } catch {
-                // Non-fatal: account may not be funded on testnet
-                setAccount({ address: info.address, balanceXLM: '0', sequence: '0' });
+                // Non-fatal: account may not exist yet — try Friendbot
+                try {
+                    await fundAccountViaFriendbot(info.address);
+                    const funded = await getAccount(info.address);
+                    setAccount(funded);
+                } catch {
+                    setAccount({ address: info.address, balanceXLM: '0', sequence: '0' });
+                }
             }
 
             setScreenState('LOBBY');
@@ -158,6 +178,8 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
         setShotsFired,
         playerHits,
         setPlayerHits,
+        enemyShipGrid,
+        setEnemyShipGrid,
         globalError,
         setGlobalError,
     };

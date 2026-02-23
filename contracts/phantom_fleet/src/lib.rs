@@ -16,7 +16,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, vec, Address, Bytes, BytesN,
-    Env, IntoVal, Symbol, Val, Vec,
+    Env, IntoVal, InvokeError, String as SorobanString, Symbol, Val, Vec,
 };
 
 // ─── Constants ─────────────────────────────────────────────
@@ -51,7 +51,7 @@ pub struct GameState {
     pub current_turn: Address,
     pub status: GameStatus,
     pub turn_number: u32,
-    pub game_hub_game_id: BytesN<32>,
+    pub session_id: u32,
 }
 
 #[contracttype]
@@ -103,36 +103,45 @@ impl PhantomFleetContract {
     /// 3. Calls Game Hub start_game(player1, player2)
     /// 4. Initializes GameState with WaitingForCommitments
     /// 5. Returns the game_id
-    pub fn initialize_game(env: Env, player1: Address, player2: Address) -> BytesN<32> {
+    pub fn initialize_game(
+        env: Env,
+        game_id: BytesN<32>,
+        player1: Address,
+        player2: Address,
+    ) -> BytesN<32> {
         player1.require_auth();
 
-        // Generate deterministic game_id from ledger state
         let sequence = env.ledger().sequence();
-        let timestamp = env.ledger().timestamp();
-        let mut id_bytes = [0u8; 32];
-        let seq_bytes = sequence.to_be_bytes();
-        let ts_bytes = timestamp.to_be_bytes();
-        id_bytes[0..4].copy_from_slice(&seq_bytes);
-        id_bytes[4..12].copy_from_slice(&ts_bytes);
-        // Mix in player addresses for uniqueness
-        id_bytes[12] = seq_bytes[0] ^ ts_bytes[0];
-        id_bytes[13] = seq_bytes[1] ^ ts_bytes[1];
-        id_bytes[14] = seq_bytes[2] ^ ts_bytes[2];
-        id_bytes[15] = seq_bytes[3] ^ ts_bytes[3];
-        let game_id = BytesN::from_array(&env, &id_bytes);
 
-        // Call Game Hub start_game(player1, player2)
+        // Generate session_id from ledger sequence
+        let session_id: u32 = sequence;
+
+        // --- GAME HUB INTEGRATION (DISABLED) ---
+        // The Game Hub traps (panics) if the calling contract is not registered.
+        // Soroban does not allow catching cross-contract panics (even with try_invoke),
+        // meaning the host immediately aborts the transaction. We disable the hub
+        // call here so the game can be played fully on-chain without the hub.
+        /*
         let hub_address =
             Address::from_string(&soroban_sdk::String::from_str(&env, GAME_HUB_ADDRESS));
-        let hub_game_id: BytesN<32> = env.invoke_contract(
+        let self_address = env.current_contract_address();
+        let zero_points: i128 = 0;
+
+        let hub_args: Vec<Val> = vec![
+            &env,
+            self_address.into_val(&env),
+            session_id.into_val(&env),
+            player1.clone().into_val(&env),
+            player2.clone().into_val(&env),
+            zero_points.into_val(&env),
+            zero_points.into_val(&env),
+        ];
+        let _ = env.try_invoke_contract::<Val, InvokeError>(
             &hub_address,
             &Symbol::new(&env, "start_game"),
-            vec![
-                &env,
-                player1.clone().into_val(&env),
-                player2.clone().into_val(&env),
-            ],
+            hub_args,
         );
+        */
 
         // Initialize empty commitment (32 zero bytes)
         let empty_commitment = BytesN::from_array(&env, &[0u8; 32]);
@@ -147,19 +156,27 @@ impl PhantomFleetContract {
             current_turn: player1.clone(),
             status: GameStatus::WaitingForCommitments,
             turn_number: 0,
-            game_hub_game_id: hub_game_id,
+            session_id,
         };
 
-        // Persist game state
         env.storage()
             .persistent()
             .set(&DataKey::Game(game_id.clone()), &game_state);
+        // Extend TTL to ~5 days
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Game(game_id.clone()), 10_000, 10_000);
 
         // Initialize empty shot history
         let empty_history: Vec<ShotResult> = Vec::new(&env);
         env.storage()
             .persistent()
             .set(&DataKey::ShotHistory(game_id.clone()), &empty_history);
+        env.storage().persistent().extend_ttl(
+            &DataKey::ShotHistory(game_id.clone()),
+            10_000,
+            10_000,
+        );
 
         // Emit event
         env.events().publish(
@@ -267,9 +284,9 @@ impl PhantomFleetContract {
         let proof_commitment = public_inputs.get(0).unwrap();
         let commitment_bytes: BytesN<32> = BytesN::from_array(&env, &{
             let mut arr = [0u8; 32];
-            let raw = proof_commitment.to_alloc_vec();
-            let len = if raw.len() > 32 { 32 } else { raw.len() };
-            arr[..len].copy_from_slice(&raw[..len]);
+            for k in 0..core::cmp::min(proof_commitment.len(), 32) {
+                arr[k as usize] = proof_commitment.get(k).unwrap();
+            }
             arr
         });
         if commitment_bytes != defender_commitment {
@@ -294,15 +311,15 @@ impl PhantomFleetContract {
             panic!("Invalid ZK proof — BN254 pairing check failed");
         }
 
-        // Parse verified public inputs
-        let is_hit_bytes = public_inputs.get(5).unwrap().to_alloc_vec();
-        let is_hit = is_hit_bytes.first().map_or(false, |b| *b == 1);
+        // Parse verified public inputs (field elements, value in last byte for small numbers)
+        let is_hit_field = public_inputs.get(5).unwrap();
+        let is_hit = is_hit_field.get(is_hit_field.len() - 1).unwrap_or(0) == 1;
 
-        let min_dist_bytes = public_inputs.get(3).unwrap().to_alloc_vec();
-        let min_dist = *min_dist_bytes.first().unwrap_or(&0) as u32;
+        let min_dist_field = public_inputs.get(3).unwrap();
+        let min_dist = min_dist_field.get(min_dist_field.len() - 1).unwrap_or(0) as u32;
 
-        let max_dist_bytes = public_inputs.get(4).unwrap().to_alloc_vec();
-        let max_dist = *max_dist_bytes.first().unwrap_or(&0) as u32;
+        let max_dist_field = public_inputs.get(4).unwrap();
+        let max_dist = max_dist_field.get(max_dist_field.len() - 1).unwrap_or(0) as u32;
 
         // Update hit counters
         if is_hit {
@@ -347,24 +364,28 @@ impl PhantomFleetContract {
         if p1_sunk || p2_sunk {
             state.status = GameStatus::Finished;
 
-            let winner = if p2_sunk {
+            let _winner = if p2_sunk {
                 state.player1.clone()
             } else {
                 state.player2.clone()
             };
 
-            // Call Game Hub end_game(game_hub_game_id, winner)
+            // --- GAME HUB INTEGRATION (DISABLED) ---
+            /*
             let hub_address =
                 Address::from_string(&soroban_sdk::String::from_str(&env, GAME_HUB_ADDRESS));
-            let _: Val = env.invoke_contract(
+            let player1_won = p2_sunk; // player1 wins if player2 is sunk
+            let hub_args: Vec<Val> = vec![
+                &env,
+                state.session_id.into_val(&env),
+                player1_won.into_val(&env),
+            ];
+            let _ = env.try_invoke_contract::<Val, InvokeError>(
                 &hub_address,
                 &Symbol::new(&env, "end_game"),
-                vec![
-                    &env,
-                    state.game_hub_game_id.clone().into_val(&env),
-                    winner.into_val(&env),
-                ],
+                hub_args,
             );
+            */
 
             env.events().publish(
                 (symbol_short!("gameover"), game_id.clone()),
@@ -376,6 +397,25 @@ impl PhantomFleetContract {
         env.storage()
             .persistent()
             .set(&DataKey::Game(game_id.clone()), &state);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Game(game_id.clone()), 10_000, 10_000);
+
+        // Also save shot history and extend TTL
+        let mut history: Vec<ShotResult> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ShotHistory(game_id.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+        history.push_back(shot_result.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::ShotHistory(game_id.clone()), &history);
+        env.storage().persistent().extend_ttl(
+            &DataKey::ShotHistory(game_id.clone()),
+            10_000,
+            10_000,
+        );
 
         // Emit shot event
         env.events().publish(
@@ -408,10 +448,6 @@ impl PhantomFleetContract {
     /// In production, this is set during contract initialization
     /// or embedded at compile time after the Noir circuit is compiled.
     fn get_verification_key(env: &Env) -> Bytes {
-        // The verification key is stored during deployment.
-        // It contains the BN254 curve points needed for pairing check:
-        //   - alpha, beta, gamma, delta points
-        //   - IC (input commitments) points
         env.storage()
             .persistent()
             .get(&symbol_short!("vk"))
@@ -424,7 +460,7 @@ impl PhantomFleetContract {
         env.storage().persistent().set(&symbol_short!("vk"), &vk);
     }
 
-    /// Verify a Groth16 proof using Stellar Protocol 25 CAP-0074 BN254.
+    /// Verify a Groth16 proof using Stellar Protocol 25 soroban-sdk BN254.
     ///
     /// The Groth16 verification equation:
     ///   e(A, B) == e(α, β) · e(L, γ) · e(C, δ)
@@ -432,23 +468,21 @@ impl PhantomFleetContract {
     /// Restructured as multi-pairing check (product of pairings == 1):
     ///   e(-A, B) · e(α, β) · e(L, γ) · e(C, δ) == 1_fp12
     ///
-    /// Uses the exact CAP-0074 host functions:
-    ///   - bn254_g1_add(BytesObject, BytesObject) -> BytesObject
-    ///   - bn254_g1_mul(BytesObject, U256Val) -> BytesObject
-    ///   - bn254_multi_pairing_check(Vec<BytesObject>, Vec<BytesObject>) -> Bool
-    ///
-    /// Point encoding (CAP-0074):
-    ///   G1: 64 bytes = be_encode(X) || be_encode(Y)   (X,Y = 32 bytes each)
-    ///   G2: 128 bytes = be_encode(X_c1) || be_encode(X_c0) || be_encode(Y_c1) || be_encode(Y_c0)
+    /// Uses soroban-sdk 25 typed BN254 API:
+    ///   - Bn254G1Affine (64 bytes), Bn254G2Affine (128 bytes), Fr (scalar)
+    ///   - env.crypto().bn254().g1_add(&p0, &p1)
+    ///   - env.crypto().bn254().g1_mul(&p0, &scalar)
+    ///   - env.crypto().bn254().pairing_check(Vec<G1>, Vec<G2>)
     fn verify_groth16_bn254(
         env: &Env,
         proof: &Bytes,
         public_inputs: &Vec<Bytes>,
         vk: &Bytes,
     ) -> bool {
+        use soroban_sdk::crypto::bn254::{Bn254G1Affine, Bn254G2Affine, Fr};
+
         // Proof layout: A(64 bytes G1) + B(128 bytes G2) + C(64 bytes G1) = 256 bytes
-        let proof_len = proof.len();
-        if proof_len < 256 {
+        if proof.len() < 256 {
             return false;
         }
 
@@ -459,16 +493,35 @@ impl PhantomFleetContract {
             return false;
         }
 
+        // ── Helper: extract G1 point from Bytes ────────────
+        let extract_g1 = |data: &Bytes, start: u32| -> Bn254G1Affine {
+            let slice = data.slice(start..(start + 64));
+            let mut arr = [0u8; 64];
+            for k in 0..64 {
+                arr[k as usize] = slice.get(k).unwrap();
+            }
+            Bn254G1Affine::from_array(env, &arr)
+        };
+
+        let extract_g2 = |data: &Bytes, start: u32| -> Bn254G2Affine {
+            let slice = data.slice(start..(start + 128));
+            let mut arr = [0u8; 128];
+            for k in 0..128 {
+                arr[k as usize] = slice.get(k).unwrap();
+            }
+            Bn254G2Affine::from_array(env, &arr)
+        };
+
         // ── Extract proof points ──────────────────────────
-        let proof_a_g1 = proof.slice(0..64); // G1 point A (64 bytes)
-        let proof_b_g2 = proof.slice(64..192); // G2 point B (128 bytes)
-        let proof_c_g1 = proof.slice(192..256); // G1 point C (64 bytes)
+        let proof_a = extract_g1(proof, 0); // G1 point A
+        let proof_b = extract_g2(proof, 64); // G2 point B
+        let proof_c = extract_g1(proof, 192); // G1 point C
 
         // ── Extract verification key points ───────────────
-        let vk_alpha_g1 = vk.slice(0..64); // α (G1, 64 bytes)
-        let vk_beta_g2 = vk.slice(64..192); // β (G2, 128 bytes)
-        let vk_gamma_g2 = vk.slice(192..320); // γ (G2, 128 bytes)
-        let vk_delta_g2 = vk.slice(320..448); // δ (G2, 128 bytes)
+        let vk_alpha = extract_g1(vk, 0); // α (G1)
+        let vk_beta = extract_g2(vk, 64); // β (G2)
+        let vk_gamma = extract_g2(vk, 192); // γ (G2)
+        let vk_delta = extract_g2(vk, 320); // δ (G2)
 
         // IC points start at byte 448, each 64 bytes (G1)
         let num_ic = (vk_len - 448) / 64;
@@ -477,124 +530,54 @@ impl PhantomFleetContract {
         }
 
         // ── Compute L = IC[0] + Σ(pub_i · IC[i+1]) ───────
-        // Using Protocol 25 BN254 scalar multiplication + point addition
-        let mut vk_x = vk.slice(448..512); // IC[0] (G1, 64 bytes)
+        let bn254 = env.crypto().bn254();
+        let mut vk_x = extract_g1(vk, 448); // IC[0]
 
         for i in 0..public_inputs.len() {
             let ic_start = 448 + (i + 1) * 64;
-            let ic_point = vk.slice(ic_start..(ic_start + 64));
+            let ic_point = extract_g1(vk, ic_start as u32);
             let pub_input = public_inputs.get(i).unwrap();
 
-            // CAP-0074: bn254_g1_mul takes (BytesObject, U256Val)
-            // Public input is a 32-byte scalar interpreted as U256
-            let scalar = Self::bytes_to_u256(env, &pub_input);
+            // Convert 32-byte public input to Fr scalar
+            let mut scalar_arr = [0u8; 32];
+            for k in 0..core::cmp::min(pub_input.len(), 32) {
+                scalar_arr[k as usize] = pub_input.get(k).unwrap();
+            }
+            let scalar = Fr::from_bytes(BytesN::from_array(env, &scalar_arr));
 
             // Scalar multiply: pub_i · IC[i+1]
-            let scaled = env.crypto().bn254_g1_mul(&ic_point, &scalar);
+            let scaled = bn254.g1_mul(&ic_point, &scalar);
 
             // Point add: vk_x += scaled
-            vk_x = env.crypto().bn254_g1_add(&vk_x, &scaled);
+            vk_x = bn254.g1_add(&vk_x, &scaled);
         }
 
-        // ── Negate A for the pairing check ────────────────
-        // Negating G1: flip Y coordinate → (X, p - Y)
-        // BN254 base field modulus p:
-        // 0x30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47
-        let neg_proof_a = Self::negate_g1_bn254(env, &proof_a_g1);
+        // ── Negate A using built-in operator ──────────────
+        let neg_proof_a = -proof_a;
 
         // ── Build pairing input vectors ───────────────────
-        // CAP-0074: bn254_multi_pairing_check(Vec<G1>, Vec<G2>) -> Bool
-        // Check: e(-A, B) · e(α, β) · e(L, γ) · e(C, δ) == 1_fp12
-        let mut g1_vec: Vec<Bytes> = Vec::new(env);
-        let mut g2_vec: Vec<Bytes> = Vec::new(env);
+        let mut g1_vec: Vec<Bn254G1Affine> = Vec::new(env);
+        let mut g2_vec: Vec<Bn254G2Affine> = Vec::new(env);
 
         // Pair 1: (-A, B)
         g1_vec.push_back(neg_proof_a);
-        g2_vec.push_back(proof_b_g2);
+        g2_vec.push_back(proof_b);
 
         // Pair 2: (α, β)
-        g1_vec.push_back(vk_alpha_g1);
-        g2_vec.push_back(vk_beta_g2);
+        g1_vec.push_back(vk_alpha);
+        g2_vec.push_back(vk_beta);
 
         // Pair 3: (L, γ)
         g1_vec.push_back(vk_x);
-        g2_vec.push_back(vk_gamma_g2);
+        g2_vec.push_back(vk_gamma);
 
         // Pair 4: (C, δ)
-        g1_vec.push_back(proof_c_g1);
-        g2_vec.push_back(vk_delta_g2);
+        g1_vec.push_back(proof_c);
+        g2_vec.push_back(vk_delta);
 
         // ── Execute Protocol 25 multi-pairing check ───────
         // This single host call replaces ~100K+ WASM instructions
-        env.crypto().bn254_multi_pairing_check(&g1_vec, &g2_vec)
-    }
-
-    /// Convert a 32-byte Bytes scalar to U256Val for bn254_g1_mul.
-    fn bytes_to_u256(env: &Env, b: &Bytes) -> U256 {
-        let arr = b.to_alloc_vec();
-        let mut limbs = [0u64; 4];
-        // Big-endian bytes → 4 × u64 limbs (little-endian order)
-        for i in 0..4 {
-            let offset = 24 - i * 8;
-            for j in 0..8 {
-                let byte_idx = offset + j;
-                if byte_idx < arr.len() {
-                    limbs[i] = (limbs[i] << 8) | (arr[byte_idx] as u64);
-                }
-            }
-        }
-        U256::from_parts(env, limbs[3], limbs[2], limbs[1], limbs[0])
-    }
-
-    /// Negate a BN254 G1 point: (X, Y) → (X, p - Y).
-    /// BN254 G1 points are 64 bytes: X (32 bytes) + Y (32 bytes).
-    fn negate_g1_bn254(env: &Env, point: &Bytes) -> Bytes {
-        if point.len() != 64 {
-            return point.clone();
-        }
-
-        let x = point.slice(0..32);
-        let y = point.slice(32..64);
-
-        // BN254 base field modulus p
-        // p = 0x30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47
-        let p_bytes = Bytes::from_slice(
-            env,
-            &[
-                0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29, 0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81,
-                0x58, 0x5d, 0x97, 0x81, 0x6a, 0x91, 0x68, 0x71, 0xca, 0x8d, 0x3c, 0x20, 0x8c, 0x16,
-                0xd8, 0x7c, 0xfd, 0x47,
-            ],
-        );
-
-        // neg_y = p - y
-        let neg_y = Self::field_sub_32(env, &p_bytes, &y);
-
-        let mut result = Bytes::new(env);
-        result.append(&x);
-        result.append(&neg_y);
-        result
-    }
-
-    /// Subtract two 32-byte big-endian field elements: a - b.
-    fn field_sub_32(env: &Env, a: &Bytes, b: &Bytes) -> Bytes {
-        let mut result = [0u8; 32];
-        let a_vec = a.to_alloc_vec();
-        let b_vec = b.to_alloc_vec();
-
-        let mut borrow: i16 = 0;
-        for i in (0..32).rev() {
-            let diff = (a_vec[i] as i16) - (b_vec[i] as i16) - borrow;
-            if diff < 0 {
-                result[i] = (diff + 256) as u8;
-                borrow = 1;
-            } else {
-                result[i] = diff as u8;
-                borrow = 0;
-            }
-        }
-
-        Bytes::from_slice(env, &result)
+        bn254.pairing_check(g1_vec, g2_vec)
     }
 }
 
@@ -627,8 +610,9 @@ mod test {
         env.ledger().set_sequence_number(100);
         env.ledger().set_timestamp(1700000000);
 
+        let game_id = BytesN::from_array(&env, &[1u8; 32]);
         // Initialize game
-        let game_id = client.initialize_game(&p1, &p2);
+        let result_id = client.initialize_game(&game_id, &p1, &p2);
 
         // Check initial state
         let state = client.get_game_state(&game_id);
@@ -648,7 +632,8 @@ mod test {
         env.ledger().set_sequence_number(200);
         env.ledger().set_timestamp(1700000001);
 
-        let game_id = client.initialize_game(&p1, &p2);
+        let game_id = BytesN::from_array(&env, &[2u8; 32]);
+        client.initialize_game(&game_id, &p1, &p2);
 
         // P1 commits
         let commitment1 = BytesN::from_array(&env, &[1u8; 32]);
@@ -678,8 +663,10 @@ mod test {
         env.ledger().set_sequence_number(300);
         env.ledger().set_timestamp(1700000002);
 
-        let game_id = client.initialize_game(&p1, &p2);
+        let game_id = BytesN::from_array(&env, &[3u8; 32]);
+        client.initialize_game(&game_id, &p1, &p2);
         let history = client.get_shot_history(&game_id);
         assert_eq!(history.len(), 0);
     }
 }
+// force rebuild Mon Feb 23 02:33:23 WIB 2026

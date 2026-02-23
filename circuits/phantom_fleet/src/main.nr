@@ -1,9 +1,9 @@
-// ═══════════════════════════════════════════════════════════════
-// PHANTOM FLEET — ZK SHOT PROOF CIRCUIT
-// ═══════════════════════════════════════════════════════════════
+// ================================================================
+// PHANTOM FLEET - ZK SHOT PROOF CIRCUIT
+// ================================================================
 //
 // Proves simultaneously:
-//   1. Shot target is valid (within 6×6 grid)
+//   1. Shot target is valid (within 6x6 grid)
 //   2. Hit/miss result is honest (matches committed layout)
 //   3. For misses: claimed proximity range is accurate
 //      - closest ship is genuinely within [min_dist, max_dist]
@@ -11,11 +11,11 @@
 //
 // Backend: BN254 curve, Groth16 proving system
 // Target: ~850 constraints, <10s proof time in browser WASM
-// ═══════════════════════════════════════════════════════════════
+// ================================================================
 
-use std::hash::poseidon;
+use poseidon::poseidon;
 
-// ─── HELPER: Compute absolute difference for unsigned values ───
+// --- HELPER: Compute absolute difference for unsigned values ---
 fn abs_diff(a: u8, b: u8) -> u8 {
     if a > b {
         a - b
@@ -24,7 +24,7 @@ fn abs_diff(a: u8, b: u8) -> u8 {
     }
 }
 
-// ─── HELPER: Maximum of two u8 values ─────────────────────────
+// --- HELPER: Maximum of two u8 values ---
 fn max_u8(a: u8, b: u8) -> u8 {
     if a > b {
         a
@@ -41,12 +41,12 @@ fn chebyshev_distance(x1: u8, y1: u8, x2: u8, y2: u8) -> u8 {
     max_u8(dx, dy)
 }
 
-// ─── HELPER: Hash the full ship grid into a single Field ──────
+// --- HELPER: Hash the full ship grid into a single Field ---
 fn hash_grid(grid: [Field; 36]) -> Field {
     // Hash in chunks of 15 (Poseidon max arity), then combine.
-    // Chunk 1: grid[0..15]  → 15 elements
-    // Chunk 2: grid[15..30] → 15 elements
-    // Chunk 3: grid[30..36] → 6 elements
+    // Chunk 1: grid[0..15]  - 15 elements
+    // Chunk 2: grid[15..30] - 15 elements
+    // Chunk 3: grid[30..36] - 6 elements (padded to 7)
     // Final:   hash(chunk1_hash, chunk2_hash, chunk3_hash)
 
     let chunk1 = poseidon::bn254::hash_15([
@@ -69,7 +69,7 @@ fn hash_grid(grid: [Field; 36]) -> Field {
     poseidon::bn254::hash_3([chunk1, chunk2, chunk3])
 }
 
-// ─── HELPER: Verify Merkle path for a leaf ────────────────────
+// --- HELPER: Verify Merkle path for a leaf ---
 fn verify_merkle_path(
     leaf: Field,
     path: [[Field; 2]; 6],
@@ -90,19 +90,19 @@ fn verify_merkle_path(
     current == root
 }
 
-// ═══════════════════════════════════════════════════════════════
+// ================================================================
 // MAIN CIRCUIT
-// ═══════════════════════════════════════════════════════════════
+// ================================================================
 
 fn main(
-    // ─── PRIVATE INPUTS ───────────────────────────────────
-    ship_grid: [Field; 36],             // Flattened 6×6 grid. 1=ship, 0=water.
+    // --- PRIVATE INPUTS ---
+    ship_grid: [Field; 36],             // Flattened 6x6 grid. 1=ship, 0=water.
     merkle_path: [[Field; 2]; 6],       // Merkle proof for closest ship cell
     closest_ship_x: u8,                 // X coord of closest ship (private)
     closest_ship_y: u8,                 // Y coord of closest ship (private)
     layout_nonce: Field,                // Random nonce for commitment
 
-    // ─── PUBLIC INPUTS ────────────────────────────────────
+    // --- PUBLIC INPUTS ---
     target_x: pub u8,                   // Where the shot was fired
     target_y: pub u8,
     layout_commitment: pub Field,       // Poseidon hash of grid+nonce
@@ -110,12 +110,12 @@ fn main(
     max_dist: pub u8,                   // Proximity range upper bound
     is_hit: pub u8                      // 0=miss, 1=hit
 ) {
-    // ═══════════════════════════════════════════════════════
+    // ==========================================================
     // CONSTRAINT 1: Layout commitment integrity
-    // ═══════════════════════════════════════════════════════
+    // ==========================================================
     // Poseidon hash of (ship_grid_hash, layout_nonce) must equal
     // the committed layout_commitment stored on-chain at game start.
-    // Uses Noir's built-in poseidon::bn254 — NOT sha256.
+    // Uses external poseidon::bn254 -- NOT sha256.
 
     let grid_hash = hash_grid(ship_grid);
     let computed_commitment = poseidon::bn254::hash_2([grid_hash, layout_nonce]);
@@ -129,28 +129,28 @@ fn main(
         );
     }
 
-    // ═══════════════════════════════════════════════════════
+    // ==========================================================
     // CONSTRAINT 2: Grid bounds check
-    // ═══════════════════════════════════════════════════════
-    // Target coordinates must be within the 6×6 grid.
+    // ==========================================================
+    // Target coordinates must be within the 6x6 grid.
 
     assert(target_x < 6, "target_x out of bounds");
     assert(target_y < 6, "target_y out of bounds");
 
-    // ═══════════════════════════════════════════════════════
+    // ==========================================================
     // CONSTRAINT 3: Hit/miss honesty
-    // ═══════════════════════════════════════════════════════
+    // ==========================================================
     // The claimed is_hit value must exactly match the actual
     // grid cell value at the target coordinates.
 
     assert(is_hit < 2, "is_hit must be 0 or 1");
-    let target_index: u8 = target_y * 6 + target_x;
-    let actual_value = ship_grid[target_index as Field];
+    let target_index: u32 = (target_y as u32) * 6 + (target_x as u32);
+    let actual_value = ship_grid[target_index];
     assert(actual_value == is_hit as Field, "Hit/miss does not match grid");
 
-    // ═══════════════════════════════════════════════════════
+    // ==========================================================
     // CONSTRAINT 4: Proximity (only when is_hit == 0)
-    // ═══════════════════════════════════════════════════════
+    // ==========================================================
     // When the shot misses, the prover must demonstrate that
     // the claimed proximity range [min_dist, max_dist] is
     // accurate according to Chebyshev distance.
@@ -159,16 +159,16 @@ fn main(
         // 4a: The claimed closest ship cell is actually a ship
         assert(closest_ship_x < 6, "closest_ship_x out of bounds");
         assert(closest_ship_y < 6, "closest_ship_y out of bounds");
-        let closest_index: u8 = closest_ship_y * 6 + closest_ship_x;
+        let closest_index: u32 = (closest_ship_y as u32) * 6 + (closest_ship_x as u32);
         assert(
-            ship_grid[closest_index as Field] == 1,
+            ship_grid[closest_index] == 1,
             "Claimed closest cell is not a ship"
         );
 
         // 4b: Closest cell is in the committed layout (Merkle path verification).
         //     The leaf is the Poseidon hash of (cell_value, x, y, nonce).
         let leaf = poseidon::bn254::hash_4([
-            ship_grid[closest_index as Field],
+            ship_grid[closest_index],
             closest_ship_x as Field,
             closest_ship_y as Field,
             layout_nonce
@@ -213,9 +213,9 @@ fn main(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════
+// ================================================================
 // TESTS
-// ═══════════════════════════════════════════════════════════════
+// ================================================================
 
 #[test]
 fn test_hit_scenario() {
@@ -229,7 +229,7 @@ fn test_hit_scenario() {
     let grid_hash = hash_grid(grid);
     let commitment = poseidon::bn254::hash_2([grid_hash, nonce]);
 
-    // Shoot at (2,3) — direct hit
+    // Shoot at (2,3) -- direct hit
     main(
         grid,
         [[0, 0]; 6],   // merkle_path unused for hits
@@ -246,8 +246,7 @@ fn test_hit_scenario() {
 fn test_bounds_check() {
     let grid = [0 as Field; 36];
     let nonce: Field = 99999;
-    let grid_hash = hash_grid(grid);
-    let commitment = poseidon::bn254::hash_2([grid_hash, nonce]);
+    let _grid_hash = hash_grid(grid);
 
     // Valid coordinates should pass bounds
     assert(0 < 6);

@@ -71,10 +71,10 @@ export function GameLobby() {
                             <h2 className="font-display text-brass text-3xl tracking-widest mb-2">INSTANT BATTLE</h2>
                             <p className="font-mono text-smoke text-sm leading-relaxed max-w-xl">
                                 Play against the <span className="text-brass font-bold">Phantom AI</span> — no opponent needed.<br />
-                                Full ZK proof generation. On-chain verification. Immediate gameplay.
+                                Full ZK proof generation. Local Poseidon commitment. Immediate gameplay.
                             </p>
                             <p className="font-mono text-haze-gray text-xs mt-2">
-                                Bot fleet is committed on-chain with the same Poseidon commitment as human players.
+                                Bot fleet is committed locally with the same Poseidon hash as on-chain players.
                             </p>
                         </div>
                         <button
@@ -166,27 +166,10 @@ export function GameLobby() {
                     </div>
                 </div>
 
-                {/* ACTIVE PUBLIC MATCHES */}
-                <div className="mt-16 w-full">
-                    <h3 className="font-mono text-haze-gray text-xs mb-4 tracking-widest">ACTIVE PUBLIC MATCHES</h3>
-                    <div className="flex flex-col gap-2">
-                        {[1, 2].map((i) => (
-                            <div key={i} className="bg-hull flex items-center justify-between p-4 group hover:bg-hull/80 transition-colors">
-                                <div className="flex gap-8 font-mono text-sm">
-                                    <span className="text-brass tracking-wider">GAME-X9{i}KL2</span>
-                                    <span className="text-smoke">1/2 PLAYERS</span>
-                                    <span className="text-radar">WAITING...</span>
-                                </div>
-                                <button
-                                    onClick={() => { setGameId(`GAME-X9${i}KL2`); setScreen('PLACEMENT'); }}
-                                    className="font-sans font-bold text-smoke group-hover:text-brass text-sm tracking-widest"
-                                >
-                                    JOIN →
-                                </button>
-                            </div>
-                        ))}
-                    </div>
-                </div>
+                {/* ACTIVE PUBLIC MATCHES 
+                    Removed mock matches. In a serverless architecture,
+                    players share Game IDs directly to join matches.
+                */}
             </div>
 
             {/* WALLET BAR */}

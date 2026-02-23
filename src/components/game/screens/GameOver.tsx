@@ -7,8 +7,9 @@ import { useState, useEffect } from 'react';
 import { soundEngine } from '../../../utils/soundEngine';
 
 export function GameOver() {
-    const { didWin, setScreen, setGameId, wallet, gameId, setLastTx, shotsFired, playerHits, isBotGame } = useGame();
+    const { didWin, setScreen, setGameId, wallet, gameId, setLastTx, shotsFired, playerHits, isBotGame, enemyShipGrid } = useGame();
     const [endGameTx, setEndGameTx] = useState<string | null>(null);
+    const [revealStep, setRevealStep] = useState(0);
 
     const resultText = didWin ? "VICTORY" : "DEFEATED";
     const subText = didWin
@@ -27,6 +28,17 @@ export function GameOver() {
         soundEngine.stopMusic();
         soundEngine.play(didWin ? 'victory' : 'defeat');
     }, [didWin]);
+
+    // Staggered reveal animation
+    useEffect(() => {
+        const timer = setInterval(() => {
+            setRevealStep(prev => {
+                if (prev >= 36) { clearInterval(timer); return 36; }
+                return prev + 1;
+            });
+        }, 80);
+        return () => clearInterval(timer);
+    }, []);
 
     // Call end_game on mount (skip for bot games)
     useEffect(() => {
@@ -70,22 +82,38 @@ export function GameOver() {
                     {subText}
                 </p>
 
-                {/* FLEET REVEAL */}
+                {/* REAL FLEET REVEAL — actual enemy ship positions */}
                 <div className="w-full bg-hull border border-ocean-gray p-8 mb-12 relative overflow-hidden">
                     <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-transparent via-ocean-gray to-transparent" />
-                    <h3 className="font-mono text-xs text-haze-gray mb-6 tracking-widest">POST-BATTLE ANALYSIS REVEAL</h3>
-                    <div className="flex justify-center gap-1 flex-wrap">
-                        {Array.from({ length: 36 }).map((_, i) => (
-                            <motion.div
-                                key={i}
-                                initial={{ scale: 0, opacity: 0 }}
-                                animate={{ scale: 1, opacity: 1 }}
-                                transition={{ delay: i * 0.05, duration: 0.3 }}
-                                className={`w-6 h-6 border border-abyss ${(i % 5 === 0 || i % 9 === 0) ? 'bg-signal-red' : 'bg-ocean-gray'}`}
-                                style={(i % 5 === 0 || i % 9 === 0) ? { boxShadow: 'inset 0 0 12px rgba(192,57,43,0.8), 0 0 8px rgba(192,57,43,0.5)' } : {}}
-                            />
-                        ))}
+                    <h3 className="font-mono text-xs text-haze-gray mb-6 tracking-widest">
+                        {didWin ? 'ENEMY FLEET POSITIONS REVEALED' : 'OPPONENT\'S FLEET REVEALED'}
+                    </h3>
+                    <div className="grid grid-cols-6 gap-1 w-fit mx-auto">
+                        {Array.from({ length: 36 }).map((_, i) => {
+                            const isShip = enemyShipGrid[i] === 1;
+                            const isRevealed = i < revealStep;
+                            return (
+                                <motion.div
+                                    key={i}
+                                    initial={{ scale: 0, opacity: 0, rotateY: 180 }}
+                                    animate={isRevealed ? { scale: 1, opacity: 1, rotateY: 0 } : {}}
+                                    transition={{ duration: 0.4, ease: 'easeOut' }}
+                                    className={`w-8 h-8 border flex items-center justify-center font-mono text-xs ${isRevealed
+                                            ? isShip
+                                                ? 'bg-signal-red/30 border-signal-red text-signal-red'
+                                                : 'bg-ocean-gray/20 border-ocean-gray/50 text-ocean-gray'
+                                            : 'bg-hull border-ocean-gray/30'
+                                        }`}
+                                    style={isRevealed && isShip ? { boxShadow: 'inset 0 0 12px rgba(192,57,43,0.8), 0 0 8px rgba(192,57,43,0.5)' } : {}}
+                                >
+                                    {isRevealed && (isShip ? '■' : '·')}
+                                </motion.div>
+                            );
+                        })}
                     </div>
+                    <p className="font-mono text-[0.6rem] text-haze-gray mt-4 tracking-widest">
+                        LAYOUT WAS PRIVATE UNTIL NOW — VERIFIED BY ZK PROOF
+                    </p>
                 </div>
 
                 {/* STATS */}

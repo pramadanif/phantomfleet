@@ -55,7 +55,7 @@ Protocol 25 ([CAP-0074](https://github.com/stellar/stellar-protocol/blob/master/
 
 | Contract | Address | Explorer |
 |---|---|---|
-| Phantom Fleet | *Deployed via `scripts/deploy.sh`* | [View](https://stellar.expert/explorer/testnet/contract/) |
+| Phantom Fleet | `CCXT66VF4VJYZFCKB6BF7UEBWHQN7M45RPG3BV4ODKL7U3T4MZFDMRV7` | [View](https://stellar.expert/explorer/testnet/contract/CCXT66VF4VJYZFCKB6BF7UEBWHQN7M45RPG3BV4ODKL7U3T4MZFDMRV7) |
 | Game Hub | `CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG` | [View](https://stellar.expert/explorer/testnet/contract/CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG) |
 
 ## Running Locally

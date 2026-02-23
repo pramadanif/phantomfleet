@@ -15,8 +15,8 @@ export const NETWORK_PASSPHRASE = StellarSdk.Networks.TESTNET;
 export const GAME_HUB_CONTRACT = 'CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG';
 export const EXPLORER_BASE = 'https://stellar.expert/explorer/testnet/tx/';
 
-/** PhantomFleet contract address — set after deployment. */
-export let PHANTOM_FLEET_CONTRACT = '';
+/** PhantomFleet contract address — deployed on Stellar Testnet. */
+export let PHANTOM_FLEET_CONTRACT = 'CCXT66VF4VJYZFCKB6BF7UEBWHQN7M45RPG3BV4ODKL7U3T4MZFDMRV7';
 
 /** Set the PhantomFleet contract address (called after deployment). */
 export function setContractAddress(addr: string) {
@@ -68,6 +68,18 @@ export async function getAccount(publicKey: string): Promise<AccountInfo> {
             return { address: publicKey, balanceXLM: '0', sequence: '0' };
         }
         throw err;
+    }
+}
+
+/**
+ * Fund a testnet account via Friendbot.
+ * Automatically gives 10,000 XLM on testnet.
+ */
+export async function fundAccountViaFriendbot(publicKey: string): Promise<void> {
+    const res = await fetch(`https://friendbot.stellar.org?addr=${encodeURIComponent(publicKey)}`);
+    if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Friendbot failed: ${text}`);
     }
 }
 
@@ -192,17 +204,23 @@ export async function callCommitLayout(
     gameId: string,
     commitment: string
 ): Promise<TxResult> {
-    const gameIdBytes = Buffer.alloc(32);
-    Buffer.from(gameId.replace(/^GAME-/, '').padStart(64, '0').slice(0, 64), 'hex').copy(gameIdBytes);
+    // Encode gameId as UTF-8 bytes, padded to 32 bytes
+    const gameIdUtf8 = new TextEncoder().encode(gameId);
+    const gameIdBytes = new Uint8Array(32);
+    gameIdBytes.set(gameIdUtf8.slice(0, 32));
 
-    const commitmentBytes = Buffer.alloc(32);
+    // commitment is a 0x-prefixed 32-byte hex field element
     const commitHex = commitment.startsWith('0x') ? commitment.slice(2) : commitment;
-    Buffer.from(commitHex.padStart(64, '0').slice(0, 64), 'hex').copy(commitmentBytes);
+    const commitmentBytes = new Uint8Array(32);
+    const commitHexPadded = commitHex.padStart(64, '0').slice(0, 64);
+    for (let i = 0; i < 32; i++) {
+        commitmentBytes[i] = parseInt(commitHexPadded.slice(i * 2, i * 2 + 2), 16);
+    }
 
     const args = [
-        StellarSdk.xdr.ScVal.scvBytes(gameIdBytes),
+        StellarSdk.xdr.ScVal.scvBytes(Buffer.from(gameIdBytes)),
         StellarSdk.nativeToScVal(callerAddress, { type: 'address' }),
-        StellarSdk.xdr.ScVal.scvBytes(commitmentBytes),
+        StellarSdk.xdr.ScVal.scvBytes(Buffer.from(commitmentBytes)),
     ];
 
     return submitContractCall(
@@ -261,17 +279,21 @@ export async function callSubmitShot(
 }
 
 /**
- * End a game. Calls end_game() on the contract.
+ * End a game. The contract auto-determines winner from hit counts.
+ * Calls end_game() on our PhantomFleet contract — no arguments needed.
+ * (The contract's submit_shot already calls the Hub's end_game internally when someone wins)
  */
 export async function callEndGame(
     callerAddress: string,
     gameId: string
 ): Promise<TxResult> {
-    const gameIdBytes = Buffer.alloc(32);
-    Buffer.from(gameId.replace(/^GAME-/, '').padStart(64, '0').slice(0, 64), 'hex').copy(gameIdBytes);
+    // Our PhantomFleet contract's end_game takes the game_id bytes
+    const gameIdUtf8 = new TextEncoder().encode(gameId);
+    const gameIdBytes = new Uint8Array(32);
+    gameIdBytes.set(gameIdUtf8.slice(0, 32));
 
     const args = [
-        StellarSdk.xdr.ScVal.scvBytes(gameIdBytes),
+        StellarSdk.xdr.ScVal.scvBytes(Buffer.from(gameIdBytes)),
     ];
 
     return submitContractCall(

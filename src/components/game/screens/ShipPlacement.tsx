@@ -24,8 +24,10 @@ const INVENTORY: ShipInfo[] = [
     { id: 'S2', type: 'SCOUT', size: 1 },
 ];
 
+const CRYPTO_TIP = "Your layout will be cryptographically sealed using a Poseidon hash before the game starts. Your opponent will never see this — guaranteed by zero-knowledge proof.";
+
 export function ShipPlacement() {
-    const { setScreen, setShipGrid, setLayoutNonce, wallet, gameId, setGlobalError, setLastTx } = useGame();
+    const { setScreen, setShipGrid, setLayoutNonce, wallet, gameId, setGlobalError, setLastTx, isBotGame } = useGame();
 
     const [placedShips, setPlacedShips] = useState<Record<string, { cells: number[], type: ShipType }>>({});
     const [selectedShip, setSelectedShip] = useState<string | null>(null);
@@ -89,7 +91,7 @@ export function ShipPlacement() {
                 ship.cells.forEach(c => { grid[c] = 1; });
             });
 
-            // 2. Build Merkle tree
+            // 2. Build Merkle tree (real Poseidon BN254 hashing)
             setSealStatus('BUILDING MERKLE TREE...');
             soundEngine.play('proof_generating');
             const { tree, nonce } = await buildMerkleTree(grid);
@@ -98,22 +100,37 @@ export function ShipPlacement() {
             setSealStatus('COMPUTING POSEIDON COMMITMENT...');
             const commitment = await computeCommitment(grid, nonce);
 
-            // 4. Submit on-chain
-            setSealStatus('SUBMITTING TO STELLAR...');
-            const txResult = await callCommitLayout(wallet?.address || '', gameId || '', commitment);
-
-            setLastTx(txResult);
-            setSealedTx(txResult.txHash);
-            setSealStatus('');
-
-            // 5. Store grid and nonce in context (needed for battle proofs)
+            // 4. Store grid and nonce in context (needed for battle ZK proofs)
             setShipGrid(grid);
             setLayoutNonce(nonce);
 
-            // 6. Wait for opponent, then navigate
-            setTimeout(() => {
-                setScreen('BATTLE');
-            }, 2500);
+            if (isBotGame) {
+                // Bot games: purely client-side — no Soroban calls needed
+                // The commitment is computed locally using the exact same Poseidon hash
+                // as the on-chain circuit. We skip contract submission since there's
+                // no on-chain game state for bot matches.
+                setSealStatus('FLEET SEALED LOCALLY');
+                setSealedTx('local-' + commitment.slice(2, 14));
+                setSealStatus('');
+
+                // Go directly to battle
+                setTimeout(() => {
+                    setScreen('BATTLE');
+                }, 1500);
+            } else {
+                // PvP: submit commitment on-chain via Soroban
+                setSealStatus('SUBMITTING TO STELLAR...');
+                const txResult = await callCommitLayout(wallet?.address || '', gameId || '', commitment);
+
+                setLastTx(txResult);
+                setSealedTx(txResult.txHash);
+                setSealStatus('');
+
+                // Wait for opponent, then navigate
+                setTimeout(() => {
+                    setScreen('BATTLE');
+                }, 2500);
+            }
         } catch (err: any) {
             setGlobalError('Fleet sealing failed: ' + (err.message || 'Unknown error'));
             setIsSealing(false);
@@ -158,9 +175,12 @@ export function ShipPlacement() {
 
                 <div className="text-center mb-12">
                     <h1 className="font-display text-chalk text-4xl md:text-5xl tracking-widest mb-2">DEPLOY YOUR FLEET</h1>
-                    <p className="font-sans text-smoke text-lg leading-snug">
+                    <p className="font-sans text-smoke text-lg leading-snug mb-3">
                         Your layout will be cryptographically sealed.<br />
                         Your opponent will never see this.
+                    </p>
+                    <p className="font-mono text-haze-gray text-[0.65rem] tracking-wider max-w-lg mx-auto leading-relaxed border-t border-ocean-gray pt-2">
+                        🔒 {CRYPTO_TIP}
                     </p>
                 </div>
 

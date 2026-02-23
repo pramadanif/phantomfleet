@@ -1,15 +1,15 @@
 /**
  * ZK Proof Utilities for Phantom Fleet
- * 
+ *
  * Uses real Poseidon BN254 hash via circomlibjs (same as Noir circuit).
  * Proof generation uses @noir-lang/noir_js + Barretenberg backend.
  * No mocks. Production-ready.
  */
 
-// @ts-expect-error — circomlibjs has no types
+// @ts-expect-error - circomlibjs has no types
 import { buildPoseidon } from 'circomlibjs';
 
-// ── Types ──────────────────────────────────────────────────
+// -- Types -----------------------------------------------------------
 
 export interface MerkleTree {
     root: string;
@@ -24,7 +24,7 @@ export interface ShotWitness {
     targetY: number;
     closestShipX: number;
     closestShipY: number;
-    layoutNonce: string;
+    layoutNonce: string; // always a hex Field string like "0xabc..." or decimal bigint string
 }
 
 export interface ZKProof {
@@ -32,7 +32,7 @@ export interface ZKProof {
     publicInputs: string[];
 }
 
-// ── Poseidon Hash (Real BN254) ─────────────────────────────
+// -- Poseidon Hash (Real BN254) --------------------------------------
 
 let poseidonInstance: any = null;
 
@@ -46,20 +46,81 @@ async function getPoseidon() {
 /**
  * Real Poseidon BN254 hash using circomlibjs.
  * Matches Noir's poseidon::bn254 hash function.
+ * Inputs must be numeric: numbers, bigints, or hex strings starting with 0x.
  */
 async function poseidonHash(...inputs: (string | number | bigint)[]): Promise<string> {
     const poseidon = await getPoseidon();
     const F = poseidon.F;
-    const inputElements = inputs.map(x => F.e(BigInt(x)));
+    const inputElements = inputs.map(x => {
+        if (typeof x === 'bigint') return F.e(x);
+        if (typeof x === 'number') return F.e(BigInt(x));
+        // string: must be hex "0x..." or decimal
+        if (typeof x === 'string' && x.startsWith('0x')) return F.e(BigInt(x));
+        return F.e(BigInt(x));
+    });
     const hash = poseidon(inputElements);
     return '0x' + F.toString(hash, 16).padStart(64, '0');
 }
 
-// ── Merkle Tree Construction ──────────────────────────────
+// -- Nonce Generation ------------------------------------------------
 
+/**
+ * Generate a cryptographically random nonce as a Field element (bigint < BN254 order).
+ * Returns as a decimal string safe for BigInt() conversion.
+ * NOTE: crypto.randomUUID() returns a UUID which cannot be converted to BigInt.
+ * We must use a random 31-byte value within the BN254 scalar field.
+ */
+export function generateNonce(): string {
+    // BN254 scalar field order (r):
+    // 21888242871839275222246405745257275088548364400416034343698204186575808495617
+    const BN254_R = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+    const bytes = new Uint8Array(31); // 31 bytes = 248 bits, safely below BN254 field
+    crypto.getRandomValues(bytes);
+    let val = 0n;
+    for (const b of bytes) {
+        val = (val << 8n) | BigInt(b);
+    }
+    return (val % BN254_R).toString();
+}
+
+// -- Commitment Computation ------------------------------------------
+
+/**
+ * Compute Poseidon commitment matching Noir circuit hash_grid():
+ *   chunk1 = poseidon(grid[0..15])
+ *   chunk2 = poseidon(grid[15..30])
+ *   chunk3 = poseidon(grid[30..36], 0)
+ *   gridHash = poseidon(chunk1, chunk2, chunk3)
+ *   commitment = poseidon(gridHash, nonce)
+ *
+ * nonce must be a decimal string that can be passed to BigInt().
+ */
+export async function computeCommitment(
+    grid: number[],
+    nonce: string
+): Promise<string> {
+    if (grid.length !== 36) throw new Error('Grid must be 36 cells');
+
+    const chunk1 = await poseidonHash(...grid.slice(0, 15));
+    const chunk2 = await poseidonHash(...grid.slice(15, 30));
+    const chunk3 = await poseidonHash(...grid.slice(30, 36), 0);
+    const gridHash = await poseidonHash(chunk1, chunk2, chunk3);
+
+    return poseidonHash(gridHash, nonce);
+}
+
+// -- Merkle Tree (for shot witness) ----------------------------------
+
+/**
+ * Build a depth-6 Merkle tree over 36 leaves (padded to 64).
+ * Leaf_i = poseidon(grid[i], x_i, y_i, nonce)
+ *
+ * nonce MUST be a numeric string (decimal or hex 0x...) — NOT a UUID.
+ * Use generateNonce() to create a valid nonce.
+ */
 export async function buildMerkleTree(
     shipGrid: number[],
-    nonce: string = crypto.randomUUID()
+    nonce: string = generateNonce()
 ): Promise<{ tree: MerkleTree; nonce: string }> {
     if (shipGrid.length !== 36) throw new Error('Grid must be 36 cells');
 
@@ -71,7 +132,7 @@ export async function buildMerkleTree(
         leaves.push(leaf);
     }
 
-    // Pad to 64 (nearest power of 2)
+    // Pad to 64 (nearest power of 2 >= 36)
     const targetSize = 64;
     while (leaves.length < targetSize) {
         leaves.push(await poseidonHash(0, leaves.length, 0, nonce));
@@ -96,28 +157,6 @@ export async function buildMerkleTree(
         tree: { root: current[0], layers, leaves: layers[0] },
         nonce,
     };
-}
-
-/**
- * Compute Poseidon commitment matching Noir circuit hash_grid():
- *   chunk1 = poseidon(grid[0..15])
- *   chunk2 = poseidon(grid[15..30])
- *   chunk3 = poseidon(grid[30..36], 0)
- *   gridHash = poseidon(chunk1, chunk2, chunk3)
- *   commitment = poseidon(gridHash, nonce)
- */
-export async function computeCommitment(
-    grid: number[],
-    nonce: string
-): Promise<string> {
-    if (grid.length !== 36) throw new Error('Grid must be 36 cells');
-
-    const chunk1 = await poseidonHash(...grid.slice(0, 15));
-    const chunk2 = await poseidonHash(...grid.slice(15, 30));
-    const chunk3 = await poseidonHash(...grid.slice(30, 36), 0);
-    const gridHash = await poseidonHash(chunk1, chunk2, chunk3);
-
-    return poseidonHash(gridHash, nonce);
 }
 
 /**
@@ -164,7 +203,10 @@ export function findClosestShip(
 
 /**
  * Generate a real ZK proof using Noir circuit + Barretenberg backend.
- * Public inputs: [commitment, targetX, targetY, minDist, maxDist, isHit]
+ * Public inputs order: [commitment, targetX, targetY, minDist, maxDist, isHit]
+ *
+ * If Noir circuit is not available (ACIR not compiled), falls back to
+ * a placeholder proof so VS-BOT mode still works without wallet/Soroban.
  */
 export async function generateShotProof(witness: ShotWitness): Promise<ZKProof> {
     const targetIndex = witness.targetY * 6 + witness.targetX;
@@ -186,8 +228,9 @@ export async function generateShotProof(witness: ShotWitness): Promise<ZKProof> 
         const { Noir } = await import('@noir-lang/noir_js');
         const { BarretenbergBackend } = await import('@noir-lang/backend_barretenberg');
 
-        // Load compiled circuit artifact
+        // Load compiled circuit artifact from /public/circuits/
         const circuitResponse = await fetch('/circuits/phantom_fleet.json');
+        if (!circuitResponse.ok) throw new Error('Circuit artifact not found at /circuits/phantom_fleet.json');
         const circuit = await circuitResponse.json();
 
         const backend = new BarretenbergBackend(circuit);
@@ -206,15 +249,20 @@ export async function generateShotProof(witness: ShotWitness): Promise<ZKProof> 
 
         // Pad merkle path to exactly 6 levels
         while (merklePath.length < 6) {
-            merklePath.push(['0x0', '0']);
+            merklePath.push(['0x0000000000000000000000000000000000000000000000000000000000000000', '0']);
         }
+        // Truncate to exactly 6 levels
+        merklePath.splice(6);
+
+        // nonce as hex field string (Noir expects 0x-prefixed hex)
+        const nonceHex = '0x' + BigInt(witness.layoutNonce).toString(16).padStart(64, '0');
 
         const circuitInputs = {
             ship_grid: witness.shipGrid.map(String),
             merkle_path: merklePath,
             closest_ship_x: String(witness.closestShipX),
             closest_ship_y: String(witness.closestShipY),
-            layout_nonce: '0x' + BigInt(witness.layoutNonce).toString(16).padStart(64, '0'),
+            layout_nonce: nonceHex,
             target_x: String(witness.targetX),
             target_y: String(witness.targetY),
             layout_commitment: commitment,
@@ -229,10 +277,11 @@ export async function generateShotProof(witness: ShotWitness): Promise<ZKProof> 
 
         await backend.destroy();
     } catch (e) {
-        // Fallback: generate structurally valid proof if circuit not compiled yet
-        // This path is only used during initial development before nargo compile
-        console.warn('[PhantomFleet] Noir circuit not available, using crypto proof:', e);
-        const data = new TextEncoder().encode(commitment + Date.now());
+        // Fallback: generate structurally valid placeholder proof for VS-BOT mode
+        // This path is taken when: circuit not found, or running in offline mode.
+        // On-chain verification will reject this — only for local bot matches.
+        console.warn('[PhantomFleet] Noir circuit proof unavailable, using placeholder:', e);
+        const data = new TextEncoder().encode(commitment + witness.targetX + witness.targetY + Date.now());
         const hash = await crypto.subtle.digest('SHA-256', data);
         const proofBytes = new Uint8Array(256);
         const hashBytes = new Uint8Array(hash);
