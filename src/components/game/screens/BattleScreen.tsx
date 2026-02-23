@@ -3,7 +3,15 @@
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useGame } from '../GameContext';
-import { callSubmitShot, EXPLORER_BASE } from '../../../utils/stellar';
+import {
+    callFireShot,
+    callResolveShot,
+    callGetGameState,
+    callGetShotHistory,
+    callHasPendingShot,
+    callGetPendingShot,
+    EXPLORER_BASE,
+} from '../../../utils/stellar';
 import {
     BOT_FLEET,
     createBotState,
@@ -16,6 +24,14 @@ import {
 import { soundEngine } from '../../../utils/soundEngine';
 
 const TOTAL_SHIP_CELLS = 11;
+const EXPLORER_LEDGER_BASE = 'https://stellar.expert/explorer/testnet/ledger/';
+
+type MissInfo = {
+    cell: string;
+    distance: 'HOT' | 'WARM' | 'COLD';
+    txHash?: string;
+    txSequence?: number;
+};
 
 export function BattleScreen() {
     const { wallet, gameId, shipGrid, layoutNonce, setScreen, setDidWin, setGlobalError, setLastTx, isBotGame, setShotsFired, shotsFired, setPlayerHits, playerHits, setEnemyShipGrid } = useGame();
@@ -26,9 +42,14 @@ export function BattleScreen() {
     const [playerGrid, setPlayerGrid] = useState<Record<number, 'MISS' | 'HIT'>>({});
     const [generatingProofCell, setGeneratingProofCell] = useState<number | null>(null);
     const [proofProgress, setProofProgress] = useState(0);
-    const [lastMissInfo, setLastMissInfo] = useState<{ cell: string; distance: 'HOT' | 'WARM' | 'COLD'; txHash: string } | null>(null);
+    const [lastMissInfo, setLastMissInfo] = useState<MissInfo | null>(null);
     const [lastHitTx, setLastHitTx] = useState<string | null>(null);
+    const [turnSyncing, setTurnSyncing] = useState(false);
+    const [pendingIncoming, setPendingIncoming] = useState<{ x: number; y: number; shooter: string } | null>(null);
+    const [chainState, setChainState] = useState<{ player1: string; player2: string; p1HitsReceived: number; p2HitsReceived: number } | null>(null);
     const workerRef = useRef<Worker | null>(null);
+    const pendingOutgoingCellRef = useRef<number | null>(null);
+    const historyLenRef = useRef(0);
 
     // Bot state
     const botStateRef = useRef<BotState>(createBotState('NORMAL'));
@@ -48,6 +69,165 @@ export function BattleScreen() {
             soundEngine.stopMusic();
         };
     }, []);
+
+    const generateProofViaWorker = async (targetX: number, targetY: number) => {
+        return new Promise<any>((resolve, reject) => {
+            if (!workerRef.current) {
+                reject(new Error('Worker not ready'));
+                return;
+            }
+
+            workerRef.current.onmessage = (e) => {
+                if (e.data.type === 'PROOF_PROGRESS') {
+                    setProofProgress(e.data.percent);
+                } else if (e.data.type === 'PROOF_READY') {
+                    resolve(e.data.proof);
+                } else if (e.data.type === 'PROOF_ERROR') {
+                    reject(new Error(e.data.error));
+                }
+            };
+
+            workerRef.current.postMessage({
+                type: 'GENERATE_PROOF',
+                witness: {
+                    shipGrid,
+                    targetX,
+                    targetY,
+                    layoutNonce,
+                },
+            });
+        });
+    };
+
+    useEffect(() => {
+        if (isBotGame || !wallet?.address || !gameId) return;
+
+        const syncLoop = async () => {
+            try {
+                setTurnSyncing(true);
+                const [state, hasPending] = await Promise.all([
+                    callGetGameState(wallet.address, gameId),
+                    callHasPendingShot(wallet.address, gameId),
+                ]);
+
+                setChainState({
+                    player1: state.player1,
+                    player2: state.player2,
+                    p1HitsReceived: state.p1HitsReceived,
+                    p2HitsReceived: state.p2HitsReceived,
+                });
+
+                const myHitsReceived = state.player1 === wallet.address ? state.p1HitsReceived : state.p2HitsReceived;
+                const enemyHitsReceived = state.player1 === wallet.address ? state.p2HitsReceived : state.p1HitsReceived;
+                setPlayerHits(enemyHitsReceived);
+
+                if (myHitsReceived >= TOTAL_SHIP_CELLS || enemyHitsReceived >= TOTAL_SHIP_CELLS || state.status === 'Finished') {
+                    setDidWin(enemyHitsReceived >= TOTAL_SHIP_CELLS);
+                    setScreen('GAME_OVER');
+                    return;
+                }
+
+                setTurn(state.currentTurn === wallet.address ? 'PLAYER' : 'ENEMY');
+
+                if (hasPending) {
+                    const pending = await callGetPendingShot(wallet.address, gameId);
+                    const isDefenderTurn = pending.shooter !== wallet.address && state.currentTurn === wallet.address;
+
+                    if (isDefenderTurn) {
+                        setPendingIncoming({ x: pending.targetX, y: pending.targetY, shooter: pending.shooter });
+                    } else {
+                        setPendingIncoming(null);
+                    }
+                } else {
+                    setPendingIncoming(null);
+                }
+
+                const history = await callGetShotHistory(wallet.address, gameId);
+                if (history.length > historyLenRef.current) {
+                    const latest = history[history.length - 1];
+                    historyLenRef.current = history.length;
+
+                    const pendingCell = pendingOutgoingCellRef.current;
+                    if (pendingCell !== null) {
+                        setEnemyGrid(prev => ({
+                            ...prev,
+                            [pendingCell]: latest.isHit ? 'HIT' : 'MISS',
+                        }));
+
+                        if (latest.isHit) {
+                            soundEngine.play('hit_explosion');
+                            setLastMissInfo(null);
+                            setLastHitTx(null);
+                        } else {
+                            soundEngine.play('miss_splash');
+                            soundEngine.play('sonar_ping');
+                            const cellName = `${String.fromCharCode(65 + Math.floor(pendingCell / 6))}${(pendingCell % 6) + 1}`;
+                            const distLabel: 'HOT' | 'WARM' | 'COLD' = latest.proximityMin <= 2 ? 'HOT' : latest.proximityMin <= 4 ? 'WARM' : 'COLD';
+                            setLastMissInfo({
+                                cell: cellName,
+                                distance: distLabel,
+                                txHash: undefined,
+                                txSequence: latest.txSequence,
+                            });
+                            setLastHitTx(null);
+                        }
+
+                        if (!latest.isHit) {
+                            setEnemyCellDist(prev => ({
+                                ...prev,
+                                [pendingCell]: latest.proximityMin,
+                            }));
+                        }
+                        pendingOutgoingCellRef.current = null;
+                        setGeneratingProofCell(null);
+                        setProofProgress(0);
+                    }
+                }
+            } catch {
+                // keep UI responsive during intermittent rpc errors
+            } finally {
+                setTurnSyncing(false);
+            }
+        };
+
+        syncLoop();
+        const timer = setInterval(syncLoop, 2500);
+        return () => clearInterval(timer);
+    }, [
+        isBotGame,
+        wallet?.address,
+        gameId,
+        shipGrid,
+        layoutNonce,
+        setLastTx,
+        setDidWin,
+        setScreen,
+        setPlayerHits,
+    ]);
+
+    const handleResolveIncomingShot = async () => {
+        if (!pendingIncoming || !wallet?.address || !gameId) return;
+        const cell = pendingIncoming.y * 6 + pendingIncoming.x;
+
+        setGeneratingProofCell(cell);
+        setProofProgress(0);
+        try {
+            const proofResult = await generateProofViaWorker(pendingIncoming.x, pendingIncoming.y);
+            const txResult = await callResolveShot(wallet.address, gameId, proofResult.proof, proofResult.publicInputs);
+            setLastTx(txResult);
+            setPlayerGrid(prev => ({
+                ...prev,
+                [cell]: txResult.isHit ? 'HIT' : 'MISS',
+            }));
+            setPendingIncoming(null);
+            soundEngine.play('proof_complete');
+        } catch (err: any) {
+            setGlobalError(err?.message || 'Failed to resolve incoming shot');
+        } finally {
+            setGeneratingProofCell(null);
+            setProofProgress(0);
+        }
+    };
 
     // Bot's turn handler
     const executeBotTurn = async () => {
@@ -87,136 +267,64 @@ export function BattleScreen() {
     };
 
     const handleEnemyGridClick = async (index: number) => {
-        if (turn !== 'PLAYER' || enemyGrid[index] || generatingProofCell !== null) return;
+        if (turn !== 'PLAYER' || enemyGrid[index] || generatingProofCell !== null || pendingIncoming !== null) return;
+
+        if (isBotGame) {
+            setGlobalError('Bot mode is disabled in strict production mode. Use on-chain PvP flow.');
+            return;
+        }
 
         const targetX = index % 6;
         const targetY = Math.floor(index / 6);
 
+        if (!isBotGame && wallet?.address && gameId) {
+            const state = await callGetGameState(wallet.address, gameId);
+            if (state.currentTurn !== wallet.address) {
+                setTurn('ENEMY');
+                setGlobalError('Belum giliran kamu. Tunggu lawan menyelesaikan turn.');
+                return;
+            }
+        }
+
         setGeneratingProofCell(index);
-        setProofProgress(0);
+        setProofProgress(100);
         soundEngine.play('shot_fire');
         setShotsFired(shotsFired + 1);
 
         try {
-            if (isBotGame) {
-                // ── Bot Mode: Process locally ──
-                // Simulate proof generation with progress
-                for (let p = 0; p <= 100; p += 10) {
-                    setProofProgress(p);
-                    await new Promise(r => setTimeout(r, 150 + Math.random() * 100));
-                }
+            const txResult = await callFireShot(
+                wallet?.address || '',
+                gameId || '',
+                targetX,
+                targetY
+            );
 
-                const result = processPlayerShotAgainstBot(targetX, targetY);
-                const botTxHash = Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b => b.toString(16).padStart(2, '0')).join('');
-
-                setGeneratingProofCell(null);
-                setProofProgress(0);
-
-                setEnemyGrid(prev => ({ ...prev, [index]: result.isHit ? 'HIT' : 'MISS' }));
-                if (!result.isHit) {
-                    setEnemyCellDist(prev => ({ ...prev, [index]: result.distance }));
-                }
-                soundEngine.play('proof_complete');
-
-                if (result.isHit) {
-                    soundEngine.play('hit_explosion');
-                    const newHits = playerHitsOnBot + 1;
-                    setPlayerHitsOnBot(newHits);
-                    setPlayerHits(playerHits + 1);
-                    setLastMissInfo(null);
-                    setLastHitTx(botTxHash);
-
-                    // Check if player wins
-                    if (newHits >= TOTAL_SHIP_CELLS) {
-                        setTimeout(() => {
-                            setEnemyShipGrid([...BOT_FLEET]);
-                            setDidWin(true);
-                            setScreen('GAME_OVER');
-                        }, 1500);
-                        return;
-                    }
-                } else {
-                    soundEngine.play('miss_splash');
-                    soundEngine.play('sonar_ping');
-                    const cellName = `${String.fromCharCode(65 + targetY)}${targetX + 1}`;
-                    setLastMissInfo({ cell: cellName, distance: result.distLabel, txHash: botTxHash });
-                    setLastHitTx(null);
-                }
-
-                // Bot's turn
-                setTurn('ENEMY');
-                executeBotTurn();
-
-            } else {
-                // ── PvP Mode: Use Web Worker + Stellar ──
-                const proofResult = await new Promise<any>((resolve, reject) => {
-                    if (!workerRef.current) { reject(new Error('Worker not ready')); return; }
-
-                    workerRef.current.onmessage = (e) => {
-                        if (e.data.type === 'PROOF_PROGRESS') {
-                            setProofProgress(e.data.percent);
-                        } else if (e.data.type === 'PROOF_READY') {
-                            resolve(e.data.proof);
-                        } else if (e.data.type === 'PROOF_ERROR') {
-                            reject(new Error(e.data.error));
-                        }
-                    };
-
-                    workerRef.current.postMessage({
-                        type: 'GENERATE_PROOF',
-                        witness: {
-                            shipGrid,
-                            targetX,
-                            targetY,
-                            layoutNonce,
-                        },
-                    });
-                });
-
-                // Submit to Stellar
-                const txResult = await callSubmitShot(
-                    wallet?.address || '',
-                    gameId || '',
-                    targetX,
-                    targetY,
-                    proofResult.proof,
-                    proofResult.publicInputs
-                );
-
-                setLastTx(txResult);
-                setGeneratingProofCell(null);
-                setProofProgress(0);
-
-                const isHit = txResult.isHit;
-                setEnemyGrid(prev => ({ ...prev, [index]: isHit ? 'HIT' : 'MISS' }));
-
-                if (!isHit) {
-                    const dist = txResult.distance;
-                    const distLabel: 'HOT' | 'WARM' | 'COLD' = dist <= 2 ? 'HOT' : dist <= 4 ? 'WARM' : 'COLD';
-                    const cellName = `${String.fromCharCode(65 + targetY)}${targetX + 1}`;
-                    setLastMissInfo({ cell: cellName, distance: distLabel, txHash: txResult.txHash });
-                    setLastHitTx(null);
-                } else {
-                    setLastMissInfo(null);
-                    setLastHitTx(txResult.txHash);
-                }
-
-                setTurn('ENEMY');
-                setTimeout(() => { setTurn('PLAYER'); }, 2000);
-            }
+            setLastTx(txResult);
+            soundEngine.play('proof_complete');
+            pendingOutgoingCellRef.current = index;
+            setTurn('ENEMY');
+            setLastMissInfo(null);
+            setLastHitTx(null);
 
         } catch (err: any) {
-            setGlobalError('Proof generation failed: ' + (err.message || 'Unknown error'));
+            setGlobalError(err?.message || 'Unknown error');
             setGeneratingProofCell(null);
             setProofProgress(0);
         }
     };
 
     // Compute remaining ships
-    const playerShipsRemaining = TOTAL_SHIP_CELLS - botHitsOnPlayer;
+    const myHitsReceived = !isBotGame && chainState && wallet?.address
+        ? (chainState.player1 === wallet.address ? chainState.p1HitsReceived : chainState.p2HitsReceived)
+        : botHitsOnPlayer;
+    const enemyHitsReceived = !isBotGame && chainState && wallet?.address
+        ? (chainState.player1 === wallet.address ? chainState.p2HitsReceived : chainState.p1HitsReceived)
+        : playerHitsOnBot;
+
+    const playerShipsRemaining = TOTAL_SHIP_CELLS - myHitsReceived;
     const enemyShipsRemaining = isBotGame
         ? countBotShipsRemaining(new Set(Object.entries(enemyGrid).filter(([_, v]) => v === 'HIT').map(([k]) => Number(k))))
-        : TOTAL_SHIP_CELLS;
+        : TOTAL_SHIP_CELLS - enemyHitsReceived;
 
     const renderYourWaters = () => {
         const cells = [];
@@ -311,8 +419,13 @@ export function BattleScreen() {
                     )}
                     {isGenerating && (
                         <motion.div initial={{ opacity: 0 }} animate={{ opacity: [0.5, 1, 0.5] }} transition={{ duration: 1.2, repeat: Infinity }} className="absolute inset-0 flex items-center justify-center text-radar font-bold">
-                            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none">
-                                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <circle cx="12" cy="12" r="9"></circle>
+                                <circle cx="12" cy="12" r="3"></circle>
+                                <line x1="12" y1="1" x2="12" y2="4"></line>
+                                <line x1="12" y1="20" x2="12" y2="23"></line>
+                                <line x1="1" y1="12" x2="4" y2="12"></line>
+                                <line x1="20" y1="12" x2="23" y2="12"></line>
                             </svg>
                         </motion.div>
                     )}
@@ -332,7 +445,7 @@ export function BattleScreen() {
                         {turn === 'PLAYER' && (
                             <motion.div animate={{ opacity: [1, 0.3, 1] }} transition={{ duration: 1.2, repeat: Infinity }} className="w-2 h-2 bg-radar rounded-full" />
                         )}
-                        {turn === 'PLAYER' ? 'YOUR TURN TO FIRE' : isBotGame ? 'PHANTOM AI TARGETING...' : 'ENEMY TURN'}
+                        {turnSyncing ? 'SYNCING TURN...' : turn === 'PLAYER' ? 'YOUR TURN TO FIRE' : isBotGame ? 'PHANTOM AI TARGETING...' : 'ENEMY TURN'}
                     </div>
 
                     <div className="flex items-center gap-8 font-mono text-xs">
@@ -351,6 +464,39 @@ export function BattleScreen() {
                         {isBotGame && <span className="px-2 py-1 bg-brass/10 border border-brass/30 text-brass">VS BOT</span>}
                     </div>
                 </div>
+
+                <AnimatePresence>
+                    {!isBotGame && pendingIncoming && generatingProofCell === null && (
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="absolute inset-0 bg-abyss/70 z-20 flex items-center justify-center px-4"
+                        >
+                            <motion.div
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: 8 }}
+                                className="w-full max-w-[420px] bg-hull border border-radar p-4"
+                                style={{ boxShadow: '0 8px 30px rgba(0,0,0,0.55)' }}
+                            >
+                                <div className="font-mono text-radar text-xs tracking-widest mb-2">INCOMING SHOT</div>
+                                <div className="font-mono text-smoke text-sm mb-3">
+                                    Opponent fired at <span className="text-brass">{String.fromCharCode(65 + pendingIncoming.y)}{pendingIncoming.x + 1}</span>.
+                                </div>
+                                <div className="font-mono text-haze-gray text-[0.7rem] mb-4">
+                                    Resolve now to generate proof and continue turn order.
+                                </div>
+                                <button
+                                    onClick={handleResolveIncomingShot}
+                                    className="w-full bg-radar/10 border border-radar text-radar font-mono text-xs py-2 hover:brightness-110"
+                                >
+                                    RESOLVE SHOT
+                                </button>
+                            </motion.div>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
 
                 {/* GRIDS */}
                 <div className="flex flex-col lg:flex-row justify-center items-start flex-1 gap-12 lg:gap-32 pt-12 pb-12 w-full">
@@ -382,12 +528,17 @@ export function BattleScreen() {
                                         <div className="flex items-center gap-2 mb-2">
                                             <motion.div animate={{ opacity: [1, 0.3, 1] }} transition={{ duration: 0.8, repeat: Infinity }} className="text-radar">
                                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                                                    <circle cx="12" cy="12" r="9"></circle>
+                                                    <circle cx="12" cy="12" r="3"></circle>
+                                                    <line x1="12" y1="1" x2="12" y2="4"></line>
+                                                    <line x1="12" y1="20" x2="12" y2="23"></line>
+                                                    <line x1="1" y1="12" x2="4" y2="12"></line>
+                                                    <line x1="20" y1="12" x2="23" y2="12"></line>
                                                 </svg>
                                             </motion.div>
                                             <span className="font-mono text-smoke text-sm">GENERATING ZK PROOF</span>
                                         </div>
-                                        <div className="font-mono text-haze-gray text-[0.65rem] mb-3">Noir circuit · BN254 · Groth16</div>
+                                        <div className="font-mono text-haze-gray text-[0.65rem] mb-3">Circom circuit · BN254 · Groth16</div>
                                         <div className="w-full h-1 bg-abyss border border-ocean-gray">
                                             <motion.div
                                                 initial={{ width: '0%' }}
@@ -440,14 +591,29 @@ export function BattleScreen() {
                                                 {lastMissInfo.distance === 'HOT' ? 'VERY HOT — 1-2 CELLS' : lastMissInfo.distance === 'WARM' ? 'WARM — 3-4 CELLS' : 'COLD — 5-6 CELLS'}
                                             </span>
                                         </div>
-                                        <a
-                                            href={`${EXPLORER_BASE}${lastMissInfo.txHash}`}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            className="font-mono text-[0.55rem] text-haze-gray uppercase hover:text-smoke"
-                                        >
-                                            CRYPTOGRAPHIC RANGE PROOF · VERIFIED ON STELLAR ↗
-                                        </a>
+                                        {lastMissInfo.txHash ? (
+                                            <a
+                                                href={`${EXPLORER_BASE}${lastMissInfo.txHash}`}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="font-mono text-[0.55rem] text-haze-gray uppercase hover:text-smoke"
+                                            >
+                                                CRYPTOGRAPHIC RANGE PROOF · VERIFIED ON STELLAR ↗
+                                            </a>
+                                        ) : lastMissInfo.txSequence ? (
+                                            <a
+                                                href={`${EXPLORER_LEDGER_BASE}${lastMissInfo.txSequence}`}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="font-mono text-[0.55rem] text-haze-gray uppercase hover:text-smoke"
+                                            >
+                                                CRYPTOGRAPHIC RANGE PROOF · LEDGER #{lastMissInfo.txSequence} ↗
+                                            </a>
+                                        ) : (
+                                            <span className="font-mono text-[0.55rem] text-haze-gray uppercase">
+                                                CRYPTOGRAPHIC RANGE PROOF · VERIFIED ON STELLAR
+                                            </span>
+                                        )}
                                     </motion.div>
                                 )}
                             </AnimatePresence>

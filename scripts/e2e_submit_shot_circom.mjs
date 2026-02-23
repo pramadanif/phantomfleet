@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { buildPoseidon } from 'circomlibjs';
 
-const CONTRACT_ID = 'CCHEJT376LTPQ4DZFOJZBO3BEXC3JEVT4IQAOL6EVHBJOPDY4K7ZEEAD';
+const CONTRACT_ID = process.env.PHANTOM_FLEET_CONTRACT || 'CCO5NIUW6B4HPLUUA6YOMNJ6F5OXMUJDUOZQFNAJLKWXWOTVEVL224KQ';
+const NETWORK = process.env.STELLAR_NETWORK || 'testnet';
 const SOURCE_ALIAS = process.env.STELLAR_KEY_ALIAS || 'adelanta';
 const OPPONENT_ALIAS = process.env.OPPONENT_KEY_ALIAS || 'phantom-opponent';
 
@@ -248,30 +249,40 @@ async function main() {
 
   for (const variant of encodingVariants) {
     try {
-      const vkHex = vkToContractHex(vkJson, variant);
-
-      const adminAddress = runStellar(['keys', 'address', SOURCE_ALIAS]);
-      runStellar([
-        'contract', 'invoke',
-        '--id', CONTRACT_ID,
-        '--source', SOURCE_ALIAS,
-        '--network', 'testnet',
-        '--',
-        'set_verification_key',
-        '--admin', adminAddress,
-        '--vk', vkHex,
-      ]);
-
       const hasVk = runStellar([
         'contract', 'invoke',
         '--id', CONTRACT_ID,
         '--source', SOURCE_ALIAS,
-        '--network', 'testnet',
+        '--network', NETWORK,
         '--',
         'has_verification_key',
       ]);
 
-      if (hasVk !== 'true') {
+      if (hasVk !== 'true' || process.env.FORCE_SET_VK === '1') {
+        const vkHex = vkToContractHex(vkJson, variant);
+        const adminAddress = runStellar(['keys', 'address', SOURCE_ALIAS]);
+        runStellar([
+          'contract', 'invoke',
+          '--id', CONTRACT_ID,
+          '--source', SOURCE_ALIAS,
+          '--network', NETWORK,
+          '--',
+          'set_verification_key',
+          '--admin', adminAddress,
+          '--vk', vkHex,
+        ]);
+      }
+
+      const hasVkAfter = runStellar([
+        'contract', 'invoke',
+        '--id', CONTRACT_ID,
+        '--source', SOURCE_ALIAS,
+        '--network', NETWORK,
+        '--',
+        'has_verification_key',
+      ]);
+
+      if (hasVkAfter !== 'true') {
         throw new Error(`VK not active on-chain for variant=${JSON.stringify(variant)}`);
       }
 
@@ -283,7 +294,7 @@ async function main() {
         'contract', 'invoke',
         '--id', CONTRACT_ID,
         '--source', SOURCE_ALIAS,
-        '--network', 'testnet',
+        '--network', NETWORK,
         '--',
         'initialize_game',
         '--game_id', gameId,
@@ -295,7 +306,7 @@ async function main() {
         'contract', 'invoke',
         '--id', CONTRACT_ID,
         '--source', SOURCE_ALIAS,
-        '--network', 'testnet',
+        '--network', NETWORK,
         '--',
         'commit_layout',
         '--game_id', gameId,
@@ -307,7 +318,7 @@ async function main() {
         'contract', 'invoke',
         '--id', CONTRACT_ID,
         '--source', OPPONENT_ALIAS,
-        '--network', 'testnet',
+        '--network', NETWORK,
         '--',
         'commit_layout',
         '--game_id', gameId,
@@ -318,26 +329,57 @@ async function main() {
       const proofHex = proofToHex256(proofJson, variant);
       const publicInputsHex = publicSignals.map((value) => fieldToHex32WithEndian(value, variant.publicEndian));
 
-      const submitOutput = runStellar([
+      const fireOutput = runStellar([
         'contract', 'invoke',
         '--id', CONTRACT_ID,
         '--source', SOURCE_ALIAS,
-        '--network', 'testnet',
+        '--network', NETWORK,
         '--',
-        'submit_shot',
+        'fire_shot',
         '--game_id', gameId,
         '--shooter', player1,
         '--target_x', String(targetX),
         '--target_y', String(targetY),
+      ]);
+
+      const pendingOutput = runStellar([
+        'contract', 'invoke',
+        '--id', CONTRACT_ID,
+        '--source', SOURCE_ALIAS,
+        '--network', NETWORK,
+        '--',
+        'has_pending_shot',
+        '--game_id', gameId,
+      ]);
+
+      const resolveOutput = runStellar([
+        'contract', 'invoke',
+        '--id', CONTRACT_ID,
+        '--source', OPPONENT_ALIAS,
+        '--network', NETWORK,
+        '--',
+        'resolve_shot',
+        '--game_id', gameId,
+        '--resolver', player2,
         '--proof', proofHex,
         '--public_inputs', JSON.stringify(publicInputsHex),
+      ]);
+
+      const historyOutput = runStellar([
+        'contract', 'invoke',
+        '--id', CONTRACT_ID,
+        '--source', SOURCE_ALIAS,
+        '--network', NETWORK,
+        '--',
+        'get_shot_history',
+        '--game_id', gameId,
       ]);
 
       const stateOutput = runStellar([
         'contract', 'invoke',
         '--id', CONTRACT_ID,
         '--source', SOURCE_ALIAS,
-        '--network', 'testnet',
+        '--network', NETWORK,
         '--',
         'get_game_state',
         '--game_id', gameId,
@@ -345,7 +387,10 @@ async function main() {
 
       console.log(`SUCCESS_VARIANT=${JSON.stringify(variant)}`);
       console.log(`GAME_ID=${gameId}`);
-      console.log(`SHOT_RESULT=${submitOutput}`);
+      console.log(`FIRE_RESULT=${fireOutput}`);
+      console.log(`HAS_PENDING_AFTER_FIRE=${pendingOutput}`);
+      console.log(`RESOLVE_RESULT=${resolveOutput}`);
+      console.log(`SHOT_HISTORY=${historyOutput}`);
       console.log(`GAME_STATE=${stateOutput}`);
       return;
     } catch (error) {

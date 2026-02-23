@@ -16,7 +16,7 @@ export const GAME_HUB_CONTRACT = 'CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MR
 export const EXPLORER_BASE = 'https://stellar.expert/explorer/testnet/tx/';
 
 /** PhantomFleet contract address — deployed on Stellar Testnet. */
-export let PHANTOM_FLEET_CONTRACT = 'CCHEJT376LTPQ4DZFOJZBO3BEXC3JEVT4IQAOL6EVHBJOPDY4K7ZEEAD';
+export let PHANTOM_FLEET_CONTRACT = 'CCO5NIUW6B4HPLUUA6YOMNJ6F5OXMUJDUOZQFNAJLKWXWOTVEVL224KQ';
 
 /** Set the PhantomFleet contract address (called after deployment). */
 export function setContractAddress(addr: string) {
@@ -106,6 +106,42 @@ export interface OnChainGameState {
     sessionId: number;
 }
 
+export interface OnChainPendingShot {
+    shooter: string;
+    targetX: number;
+    targetY: number;
+}
+
+export interface OnChainShotResult {
+    isHit: boolean;
+    proximityMin: number;
+    proximityMax: number;
+    proofVerified: boolean;
+    txSequence: number;
+}
+
+function mapContractError(simulationError: string): string {
+    if (simulationError.includes('Error(Contract, #3)')) {
+        return 'Not your turn yet. Wait for opponent turn to finish, then try again.';
+    }
+    if (simulationError.includes('Error(Contract, #2)')) {
+        return 'Game is not active yet. Ensure both players have sealed fleet.';
+    }
+    if (simulationError.includes('Error(Contract, #6)')) {
+        return 'Invalid proof. Regenerate proof and retry.';
+    }
+    if (simulationError.includes('Error(Contract, #7)')) {
+        return 'Commitment mismatch. Proof harus dibangun dari layout defender (lawan), bukan layout wallet yang sedang menembak.';
+    }
+    if (simulationError.includes('Error(Contract, #10)')) {
+        return 'Invalid public inputs format.';
+    }
+    if (simulationError.includes('Error(Contract, #11)')) {
+        return 'Verification key missing on-chain.';
+    }
+    return simulationError;
+}
+
 /**
  * Build, simulate, sign (via Freighter), and submit a Soroban transaction.
  * Uses full Soroban RPC workflow — no mocks.
@@ -137,7 +173,8 @@ async function submitContractCall(
     const simulated = await server.simulateTransaction(transaction);
 
     if (StellarSdk.rpc.Api.isSimulationError(simulated)) {
-        throw new Error(`Simulation failed: ${simulated.error}`);
+        const human = mapContractError(String(simulated.error));
+        throw new Error(`Simulation failed: ${human}`);
     }
 
     // Assemble with resource estimates
@@ -222,13 +259,15 @@ function parseFieldToNumber(input: string): number {
 
 function parseGameStatus(rawStatus: any): OnChainGameStatus {
     if (typeof rawStatus === 'string') {
-        if (rawStatus.includes('Active')) return 'Active';
-        if (rawStatus.includes('Finished')) return 'Finished';
+        const normalized = rawStatus.toLowerCase();
+        if (normalized.includes('active')) return 'Active';
+        if (normalized.includes('finished')) return 'Finished';
         return 'WaitingForCommitments';
     }
     if (rawStatus && typeof rawStatus === 'object') {
-        if ('Active' in rawStatus) return 'Active';
-        if ('Finished' in rawStatus) return 'Finished';
+        const keys = Object.keys(rawStatus).map(k => k.toLowerCase());
+        if (keys.some(k => k.includes('active'))) return 'Active';
+        if (keys.some(k => k.includes('finished'))) return 'Finished';
     }
     return 'WaitingForCommitments';
 }
@@ -343,47 +382,43 @@ export async function callCommitLayout(
     );
 }
 
-/**
- * Submit a shot with its ZK proof and public inputs.
- * Calls submit_shot(game_id, shooter, target_x, target_y, proof, public_inputs).
- */
-export async function callSubmitShot(
+export async function callFireShot(
     callerAddress: string,
     gameId: string,
     targetX: number,
-    targetY: number,
-    proof: string,
-    publicInputs: string[]
-): Promise<TxResult & { isHit: boolean; distance: number }> {
+    targetY: number
+): Promise<TxResult> {
     const gameIdBytes = stringToGameIdBytes(gameId);
-
-    const proofBytes = Buffer.from(atob(proof), 'binary');
-
-    const pubInputScVals = publicInputs.map(pi => {
-        return StellarSdk.xdr.ScVal.scvBytes(fieldStringToBytes32(pi));
-    });
-
     const args = [
         StellarSdk.xdr.ScVal.scvBytes(Buffer.from(gameIdBytes)),
         StellarSdk.nativeToScVal(callerAddress, { type: 'address' }),
         StellarSdk.nativeToScVal(targetX, { type: 'u32' }),
         StellarSdk.nativeToScVal(targetY, { type: 'u32' }),
+    ];
+
+    return submitContractCall(callerAddress, PHANTOM_FLEET_CONTRACT, 'fire_shot', args);
+}
+
+export async function callResolveShot(
+    callerAddress: string,
+    gameId: string,
+    proof: string,
+    publicInputs: string[]
+): Promise<TxResult & { isHit: boolean; distance: number }> {
+    const gameIdBytes = stringToGameIdBytes(gameId);
+    const proofBytes = Buffer.from(atob(proof), 'binary');
+    const pubInputScVals = publicInputs.map(pi => StellarSdk.xdr.ScVal.scvBytes(fieldStringToBytes32(pi)));
+
+    const args = [
+        StellarSdk.xdr.ScVal.scvBytes(Buffer.from(gameIdBytes)),
+        StellarSdk.nativeToScVal(callerAddress, { type: 'address' }),
         StellarSdk.xdr.ScVal.scvBytes(proofBytes),
         StellarSdk.xdr.ScVal.scvVec(pubInputScVals),
     ];
 
-    const result = await submitContractCall(
-        callerAddress,
-        PHANTOM_FLEET_CONTRACT || GAME_HUB_CONTRACT,
-        'submit_shot',
-        args
-    );
-
-    // Parse result from public inputs
-    // Order: [commitment, targetX, targetY, minDist, maxDist, isHit]
+    const result = await submitContractCall(callerAddress, PHANTOM_FLEET_CONTRACT, 'resolve_shot', args);
     const isHit = parseFieldToNumber(publicInputs[5]) === 1;
     const distance = parseFieldToNumber(publicInputs[3]);
-
     return { ...result, isHit, distance };
 }
 
@@ -422,6 +457,52 @@ export async function callGetGameState(
     };
 }
 
+export async function callHasPendingShot(callerAddress: string, gameId: string): Promise<boolean> {
+    const gameIdBytes = stringToGameIdBytes(gameId);
+    const native = await simulateReadonlyCall(
+        callerAddress,
+        PHANTOM_FLEET_CONTRACT,
+        'has_pending_shot',
+        [StellarSdk.xdr.ScVal.scvBytes(Buffer.from(gameIdBytes))]
+    );
+    return native === true;
+}
+
+export async function callGetPendingShot(callerAddress: string, gameId: string): Promise<OnChainPendingShot> {
+    const gameIdBytes = stringToGameIdBytes(gameId);
+    const native = await simulateReadonlyCall(
+        callerAddress,
+        PHANTOM_FLEET_CONTRACT,
+        'get_pending_shot',
+        [StellarSdk.xdr.ScVal.scvBytes(Buffer.from(gameIdBytes))]
+    );
+
+    return {
+        shooter: String(native.shooter ?? ''),
+        targetX: Number(native.target_x ?? native.targetX ?? 0),
+        targetY: Number(native.target_y ?? native.targetY ?? 0),
+    };
+}
+
+export async function callGetShotHistory(callerAddress: string, gameId: string): Promise<OnChainShotResult[]> {
+    const gameIdBytes = stringToGameIdBytes(gameId);
+    const native = await simulateReadonlyCall(
+        callerAddress,
+        PHANTOM_FLEET_CONTRACT,
+        'get_shot_history',
+        [StellarSdk.xdr.ScVal.scvBytes(Buffer.from(gameIdBytes))]
+    );
+
+    const arr = Array.isArray(native) ? native : [];
+    return arr.map((entry: any) => ({
+        isHit: Boolean(entry.is_hit ?? entry.isHit ?? false),
+        proximityMin: Number(entry.proximity_min ?? entry.proximityMin ?? 0),
+        proximityMax: Number(entry.proximity_max ?? entry.proximityMax ?? 0),
+        proofVerified: Boolean(entry.proof_verified ?? entry.proofVerified ?? false),
+        txSequence: Number(entry.tx_sequence ?? entry.txSequence ?? 0),
+    }));
+}
+
 export async function callHasVerificationKey(callerAddress: string): Promise<boolean> {
     const native = await simulateReadonlyCall(
         callerAddress,
@@ -433,6 +514,4 @@ export async function callHasVerificationKey(callerAddress: string): Promise<boo
 }
 
 // end_game is NOT exposed as a frontend function.
-// The contract's submit_shot() automatically calls the Hub's end_game()
-// internally when a player sinks all enemy ships.
 

@@ -12,13 +12,13 @@
 
 Traditional online Battleship has a fundamental trust problem: a central server knows both players' ship layouts, creating opportunities for cheating, data leaks, and manipulation. Phantom Fleet eliminates the server entirely. Each player's fleet layout is committed as a **Poseidon hash** on the Stellar blockchain *before the game begins*. No entity — not the opponent, not the contract, not even the game creators — can see where your ships are placed.
 
-The breakthrough mechanic is the **proximity range proof**. In standard Battleship, a miss reveals nothing. In Phantom Fleet, every miss is accompanied by a cryptographic proof revealing *how close* the shot was to the nearest ship — within a Chebyshev distance range like "1-2 cells" or "3-4 cells" — without revealing which ship or in which direction. This proof is generated entirely client-side using a **Noir ZK circuit** and verified on-chain via Stellar's **Protocol 25 BN254 precompile**. The result is a game with richer strategy and zero trust assumptions.
+The breakthrough mechanic is the **proximity range proof**. In standard Battleship, a miss reveals nothing. In Phantom Fleet, every miss is accompanied by a cryptographic proof revealing *how close* the shot was to the nearest ship — within a Chebyshev distance range like "1-2 cells" or "3-4 cells" — without revealing which ship or in which direction. This proof is generated entirely client-side using a **Circom + SnarkJS Groth16** circuit and verified on-chain via Stellar's **Protocol 25 BN254 precompile**. The result is a game with richer strategy and zero trust assumptions.
 
 ## ZK Architecture
 
 ### Circuit (For Cryptographers)
 
-The Noir circuit (`circuits/phantom_fleet/src/main.nr`) enforces four constraint groups in ~850 total constraints:
+The Circom circuit (`circuits/circom/phantom_fleet.circom`) enforces four constraint groups in ~850 total constraints:
 
 | Constraint | Purpose | Cost |
 |---|---|---|
@@ -31,7 +31,7 @@ The Noir circuit (`circuits/phantom_fleet/src/main.nr`) enforces four constraint
 
 **Why iterate all 36 cells?** Constraint 4d verifies *no ship exists closer* than the claimed nearest. Without this, a prover could dishonestly claim a distant ship as closest. The ~300 constraint cost is the price of soundness.
 
-**Proof profile:** Groth16 on BN254. 256 bytes. Target generation time: <10 seconds in browser WASM via Barretenberg backend.
+**Proof profile:** Groth16 on BN254. 256 bytes. Target generation time: <10 seconds in browser WASM via SnarkJS.
 
 ### On-Chain Verification
 
@@ -55,7 +55,7 @@ Protocol 25 ([CAP-0074](https://github.com/stellar/stellar-protocol/blob/master/
 
 | Contract | Address | Explorer |
 |---|---|---|
-| Phantom Fleet | `CCXT66VF4VJYZFCKB6BF7UEBWHQN7M45RPG3BV4ODKL7U3T4MZFDMRV7` | [View](https://stellar.expert/explorer/testnet/contract/CCXT66VF4VJYZFCKB6BF7UEBWHQN7M45RPG3BV4ODKL7U3T4MZFDMRV7) |
+| Phantom Fleet | `CCO5NIUW6B4HPLUUA6YOMNJ6F5OXMUJDUOZQFNAJLKWXWOTVEVL224KQ` | [View](https://stellar.expert/explorer/testnet/contract/CCO5NIUW6B4HPLUUA6YOMNJ6F5OXMUJDUOZQFNAJLKWXWOTVEVL224KQ) |
 | Game Hub | `CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG` | [View](https://stellar.expert/explorer/testnet/contract/CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG) |
 
 ## Running Locally
@@ -63,8 +63,9 @@ Protocol 25 ([CAP-0074](https://github.com/stellar/stellar-protocol/blob/master/
 ### Prerequisites
 
 ```bash
-# Install Noir (ZK circuit compiler)
-curl -L noirup.dev | bash && noirup
+# Install Circom + SnarkJS toolchain (for local proving/setup)
+cargo install --git https://github.com/iden3/circom.git
+npm i -g snarkjs
 
 # Install Stellar CLI (Soroban deployment)
 cargo install --locked stellar-cli
@@ -104,16 +105,23 @@ npx ts-node scripts/test-integration.ts
 
 1. **Connect** your Freighter wallet (set to Stellar Testnet) and create or join a game.
 2. **Place** your 5 ships on the 6×6 grid. Your layout is cryptographically sealed — your opponent will never see it.
-3. **Fire** shots at your opponent's grid. Each shot generates a zero-knowledge proof that verifies the result without revealing any fleet positions. Misses include a proximity ring showing how close you were.
+3. **Fire** shots at your opponent's grid (`fire_shot`). Defender then generates and submits a zero-knowledge proof (`resolve_shot`) that verifies hit/miss + proximity without revealing fleet positions. Misses include a proximity ring showing how close you were.
 
 The first player to sink all 11 enemy ship cells wins. Every move is permanently recorded on Stellar.
+
+## Protocol Clarifications
+
+- **Two-phase shot lifecycle (current implementation):** shooter submits `fire_shot(target)`, defender submits `resolve_shot(proof, public_inputs)`.
+- **Why two-phase:** only defender possesses private layout + nonce needed to generate a valid proof against defender commitment.
+- **Legacy compatibility:** `submit_shot` still exists in contract for backward compatibility, but active frontend flow uses `fire_shot → resolve_shot`.
+- **Game ID model:** `game_id` is supplied by caller (frontend) and contract enforces uniqueness (`GameAlreadyExists`) to prevent collisions.
 
 ## Technical Stack
 
 | Layer | Technology |
 |---|---|
-| ZK Circuit | [Noir](https://noir-lang.org) — Aztec's domain-specific language for ZK proofs |
-| Proving System | Groth16 on BN254 via [Barretenberg](https://github.com/AztecProtocol/barretenberg) |
+| ZK Circuit | [Circom](https://docs.circom.io) |
+| Proving System | Groth16 on BN254 via [SnarkJS](https://github.com/iden3/snarkjs) |
 | Hash Function | Poseidon (BN254-native, circuit-friendly) |
 | Smart Contract | [Soroban](https://soroban.stellar.org) (Rust → WASM) |
 | On-Chain Verification | Stellar Protocol 25 BN254 precompile |
@@ -126,7 +134,7 @@ The first player to sink all 11 enemy ship cells wins. Every move is permanently
 
 | Requirement | Status | Details |
 |---|---|---|
-| ✅ ZK-Powered Mechanic | **Core** | Every shot generates a real ZK proof (Noir/Barretenberg) proving hit/miss + proximity range without revealing fleet positions |
+| ✅ ZK-Powered Mechanic | **Core** | Every resolved shot generates a real ZK proof (Circom/SnarkJS) proving hit/miss + proximity range without revealing fleet positions |
 | ✅ Deployed Onchain | **Testnet** | Contract calls `start_game()` and `end_game()` on Game Hub `CB4VZAT…EMYG` via cross-contract invocation |
 | ✅ Front End | **Functional** | 5-screen React game with ship placement, real-time battle, bot opponent, and game over |
 | ✅ Open-source Repo | **Public** | Full source code with this README.md |

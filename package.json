@@ -8,7 +8,8 @@
     "build": "next build --webpack",
     "start": "next start",
     "clean": "rm -rf .next dist",
-    "lint": "next lint"
+    "lint": "next lint",
+    "bot:onchain:turn": "node scripts/bot_onchain_turn.mjs"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",

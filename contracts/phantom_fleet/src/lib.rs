@@ -15,8 +15,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN,
-    Env, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, vec, Address, Bytes,
+    BytesN, Env, IntoVal, Symbol, Val, Vec,
 };
 
 // ─── Constants ─────────────────────────────────────────────
@@ -64,12 +64,21 @@ pub struct ShotResult {
     pub tx_sequence: u32,
 }
 
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct PendingShot {
+    pub shooter: Address,
+    pub target_x: u32,
+    pub target_y: u32,
+}
+
 // ─── Storage Keys ──────────────────────────────────────────
 
 #[contracttype]
 pub enum DataKey {
     Game(BytesN<32>),
     ShotHistory(BytesN<32>),
+    PendingShot(BytesN<32>),
 }
 
 // ─── Errors ────────────────────────────────────────────────
@@ -90,6 +99,9 @@ pub enum Error {
     InvalidPublicInputs = 10,
     VerificationKeyMissing = 11,
     InvalidVerificationKey = 12,
+    PendingShotExists = 13,
+    NoPendingShot = 14,
+    GameAlreadyExists = 15,
 }
 
 // ─── Contract ──────────────────────────────────────────────
@@ -102,7 +114,7 @@ impl PhantomFleetContract {
     /// Initialize a new game between two players.
     ///
     /// 1. Requires auth from player1 (game creator)
-    /// 2. Generates game_id from ledger sequence + timestamp
+    /// 2. Uses caller-provided game_id (must be unique)
     /// 3. Calls Game Hub start_game(player1, player2)
     /// 4. Initializes GameState with WaitingForCommitments
     /// 5. Returns the game_id
@@ -114,37 +126,16 @@ impl PhantomFleetContract {
     ) -> BytesN<32> {
         player1.require_auth();
 
+        if env.storage().persistent().has(&DataKey::Game(game_id.clone())) {
+            env.panic_with_error(Error::GameAlreadyExists);
+        }
+
         let sequence = env.ledger().sequence();
 
         // Generate session_id from ledger sequence
         let session_id: u32 = sequence;
 
-        // --- GAME HUB INTEGRATION (DISABLED) ---
-        // The Game Hub traps (panics) if the calling contract is not registered.
-        // Soroban does not allow catching cross-contract panics (even with try_invoke),
-        // meaning the host immediately aborts the transaction. We disable the hub
-        // call here so the game can be played fully on-chain without the hub.
-        /*
-        let hub_address =
-            Address::from_string(&soroban_sdk::String::from_str(&env, GAME_HUB_ADDRESS));
-        let self_address = env.current_contract_address();
-        let zero_points: i128 = 0;
-
-        let hub_args: Vec<Val> = vec![
-            &env,
-            self_address.into_val(&env),
-            session_id.into_val(&env),
-            player1.clone().into_val(&env),
-            player2.clone().into_val(&env),
-            zero_points.into_val(&env),
-            zero_points.into_val(&env),
-        ];
-        let _ = env.try_invoke_contract::<Val, InvokeError>(
-            &hub_address,
-            &Symbol::new(&env, "start_game"),
-            hub_args,
-        );
-        */
+        Self::hub_start_game(&env, session_id, player1.clone(), player2.clone());
 
         // Initialize empty commitment (32 zero bytes)
         let empty_commitment = BytesN::from_array(&env, &[0u8; 32]);
@@ -245,6 +236,244 @@ impl PhantomFleetContract {
 
         env.events()
             .publish((symbol_short!("commit"), game_id), player);
+    }
+
+    /// Phase 1: shooter declares target coordinates on-chain.
+    /// Defender must later call resolve_shot() with a valid proof.
+    pub fn fire_shot(
+        env: Env,
+        game_id: BytesN<32>,
+        shooter: Address,
+        target_x: u32,
+        target_y: u32,
+    ) {
+        shooter.require_auth();
+
+        let mut state: GameState = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Game(game_id.clone()))
+            .unwrap_or_else(|| env.panic_with_error(Error::GameNotFound));
+
+        if state.status != GameStatus::Active {
+            env.panic_with_error(Error::InvalidStatus);
+        }
+
+        if state.current_turn != shooter {
+            env.panic_with_error(Error::NotYourTurn);
+        }
+
+        if target_x >= 6 || target_y >= 6 {
+            env.panic_with_error(Error::InvalidCoordinates);
+        }
+
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::PendingShot(game_id.clone()))
+        {
+            env.panic_with_error(Error::PendingShotExists);
+        }
+
+        let pending = PendingShot {
+            shooter: shooter.clone(),
+            target_x,
+            target_y,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingShot(game_id.clone()), &pending);
+        env.storage().persistent().extend_ttl(
+            &DataKey::PendingShot(game_id.clone()),
+            10_000,
+            10_000,
+        );
+
+        // Defender is the next resolver.
+        state.current_turn = if shooter == state.player1 {
+            state.player2.clone()
+        } else {
+            state.player1.clone()
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Game(game_id.clone()), &state);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Game(game_id.clone()), 10_000, 10_000);
+
+        env.events().publish(
+            (symbol_short!("fire"), game_id),
+            (shooter, target_x, target_y),
+        );
+    }
+
+    /// Phase 2: defender resolves pending shot by proving hit/miss honestly.
+    pub fn resolve_shot(
+        env: Env,
+        game_id: BytesN<32>,
+        resolver: Address,
+        proof: Bytes,
+        public_inputs: Vec<Bytes>,
+    ) -> ShotResult {
+        resolver.require_auth();
+
+        let mut state: GameState = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Game(game_id.clone()))
+            .unwrap_or_else(|| env.panic_with_error(Error::GameNotFound));
+
+        if state.status != GameStatus::Active {
+            env.panic_with_error(Error::InvalidStatus);
+        }
+
+        if state.current_turn != resolver {
+            env.panic_with_error(Error::NotYourTurn);
+        }
+
+        let pending: PendingShot = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingShot(game_id.clone()))
+            .unwrap_or_else(|| env.panic_with_error(Error::NoPendingShot));
+
+        if pending.shooter == resolver {
+            env.panic_with_error(Error::InvalidPlayer);
+        }
+
+        // public_inputs order: [commitment, target_x, target_y, min_dist, max_dist, is_hit]
+        if public_inputs.len() != 6 {
+            env.panic_with_error(Error::InvalidPublicInputs);
+        }
+
+        // Ensure proof target matches pending target.
+        let proof_target_x = public_inputs.get(1).unwrap();
+        let proof_target_y = public_inputs.get(2).unwrap();
+
+        let px = proof_target_x.get(proof_target_x.len() - 1).unwrap_or(0) as u32;
+        let py = proof_target_y.get(proof_target_y.len() - 1).unwrap_or(0) as u32;
+        if px != pending.target_x || py != pending.target_y {
+            env.panic_with_error(Error::InvalidPublicInputs);
+        }
+
+        // Commitment in proof must match resolver's board commitment.
+        let resolver_commitment = if resolver == state.player1 {
+            state.p1_commitment.clone()
+        } else if resolver == state.player2 {
+            state.p2_commitment.clone()
+        } else {
+            env.panic_with_error(Error::InvalidPlayer);
+        };
+
+        let proof_commitment = public_inputs.get(0).unwrap();
+        if proof_commitment.len() != 32 {
+            env.panic_with_error(Error::InvalidPublicInputs);
+        }
+        let commitment_bytes: BytesN<32> = BytesN::from_array(&env, &{
+            let mut arr = [0u8; 32];
+            for k in 0..32 {
+                arr[k as usize] = proof_commitment.get(k).unwrap();
+            }
+            arr
+        });
+        if commitment_bytes != resolver_commitment {
+            env.panic_with_error(Error::CommitmentMismatch);
+        }
+
+        let vk = Self::get_verification_key(&env);
+        if vk.len() < 512 {
+            env.panic_with_error(Error::VerificationKeyMissing);
+        }
+        if proof.len() != 256 {
+            env.panic_with_error(Error::InvalidProof);
+        }
+
+        let proof_verified = Self::verify_groth16_bn254(&env, &proof, &public_inputs, &vk);
+        if !proof_verified {
+            env.panic_with_error(Error::InvalidProof);
+        }
+
+        let is_hit_field = public_inputs.get(5).unwrap();
+        let is_hit = is_hit_field.get(is_hit_field.len() - 1).unwrap_or(0) == 1;
+
+        let min_dist_field = public_inputs.get(3).unwrap();
+        let min_dist = min_dist_field.get(min_dist_field.len() - 1).unwrap_or(0) as u32;
+
+        let max_dist_field = public_inputs.get(4).unwrap();
+        let max_dist = max_dist_field.get(max_dist_field.len() - 1).unwrap_or(0) as u32;
+
+        // Resolver is defender, so hit increments defender's hits received.
+        if is_hit {
+            if resolver == state.player1 {
+                state.p1_hits_received += 1;
+            } else {
+                state.p2_hits_received += 1;
+            }
+        }
+
+        // Next shooting turn goes to resolver (defender), restoring alternation.
+        state.current_turn = resolver.clone();
+        state.turn_number += 1;
+
+        let shot_result = ShotResult {
+            is_hit,
+            proximity_min: min_dist,
+            proximity_max: max_dist,
+            proof_verified,
+            tx_sequence: env.ledger().sequence(),
+        };
+
+        let p1_sunk = state.p1_hits_received >= TOTAL_SHIP_CELLS;
+        let p2_sunk = state.p2_hits_received >= TOTAL_SHIP_CELLS;
+        if p1_sunk || p2_sunk {
+            state.status = GameStatus::Finished;
+
+            let player1_won = p2_sunk;
+            Self::hub_end_game(&env, state.session_id, player1_won);
+
+            env.events().publish(
+                (symbol_short!("gameover"), game_id.clone()),
+                (p2_sunk, state.turn_number),
+            );
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Game(game_id.clone()), &state);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Game(game_id.clone()), 10_000, 10_000);
+
+        // Persist history
+        let mut history: Vec<ShotResult> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ShotHistory(game_id.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+        history.push_back(shot_result.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::ShotHistory(game_id.clone()), &history);
+        env.storage().persistent().extend_ttl(
+            &DataKey::ShotHistory(game_id.clone()),
+            10_000,
+            10_000,
+        );
+
+        // Clear pending shot
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PendingShot(game_id.clone()));
+
+        env.events().publish(
+            (symbol_short!("resolve"), game_id),
+            (pending.target_x, pending.target_y, is_hit, min_dist, max_dist),
+        );
+
+        shot_result
     }
 
     /// Submit a shot with a ZK proof.
@@ -377,28 +606,8 @@ impl PhantomFleetContract {
         if p1_sunk || p2_sunk {
             state.status = GameStatus::Finished;
 
-            let _winner = if p2_sunk {
-                state.player1.clone()
-            } else {
-                state.player2.clone()
-            };
-
-            // --- GAME HUB INTEGRATION (DISABLED) ---
-            /*
-            let hub_address =
-                Address::from_string(&soroban_sdk::String::from_str(&env, GAME_HUB_ADDRESS));
             let player1_won = p2_sunk; // player1 wins if player2 is sunk
-            let hub_args: Vec<Val> = vec![
-                &env,
-                state.session_id.into_val(&env),
-                player1_won.into_val(&env),
-            ];
-            let _ = env.try_invoke_contract::<Val, InvokeError>(
-                &hub_address,
-                &Symbol::new(&env, "end_game"),
-                hub_args,
-            );
-            */
+            Self::hub_end_game(&env, state.session_id, player1_won);
 
             env.events().publish(
                 (symbol_short!("gameover"), game_id.clone()),
@@ -453,6 +662,56 @@ impl PhantomFleetContract {
             .persistent()
             .get(&DataKey::ShotHistory(game_id))
             .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    pub fn has_pending_shot(env: Env, game_id: BytesN<32>) -> bool {
+        env.storage().persistent().has(&DataKey::PendingShot(game_id))
+    }
+
+    pub fn get_pending_shot(env: Env, game_id: BytesN<32>) -> PendingShot {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PendingShot(game_id))
+            .unwrap_or_else(|| env.panic_with_error(Error::NoPendingShot))
+    }
+
+    fn hub_start_game(env: &Env, session_id: u32, player1: Address, player2: Address) {
+        #[cfg(not(test))]
+        {
+            let hub_address =
+                Address::from_string(&soroban_sdk::String::from_str(env, GAME_HUB_ADDRESS));
+            let self_address = env.current_contract_address();
+            let zero_points: i128 = 0;
+            let args: Vec<Val> = vec![
+                env,
+                self_address.into_val(env),
+                session_id.into_val(env),
+                player1.into_val(env),
+                player2.into_val(env),
+                zero_points.into_val(env),
+                zero_points.into_val(env),
+            ];
+
+            env.invoke_contract::<()>(
+                &hub_address,
+                &Symbol::new(env, "start_game"),
+                args,
+            );
+        }
+    }
+
+    fn hub_end_game(env: &Env, session_id: u32, player1_won: bool) {
+        #[cfg(not(test))]
+        {
+            let hub_address =
+                Address::from_string(&soroban_sdk::String::from_str(env, GAME_HUB_ADDRESS));
+            let args: Vec<Val> = vec![env, session_id.into_val(env), player1_won.into_val(env)];
+            env.invoke_contract::<()>(
+                &hub_address,
+                &Symbol::new(env, "end_game"),
+                args,
+            );
+        }
     }
 
     // ─── Internal: BN254 Groth16 Verification ──────────────
