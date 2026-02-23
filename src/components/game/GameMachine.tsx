@@ -29,7 +29,13 @@ function GameRouter() {
                         className="fixed top-0 left-0 right-0 z-[100] bg-signal-red/20 border-b border-signal-red/50 px-6 py-3 flex items-center justify-between"
                     >
                         <span className="font-mono text-signal-red text-sm">{globalError}</span>
-                        <button onClick={() => setGlobalError(null)} className="font-mono text-signal-red text-sm hover:text-chalk">DISMISS ✕</button>
+                        <button onClick={() => setGlobalError(null)} className="font-mono text-signal-red text-sm flex items-center gap-1 hover:text-chalk">
+                            DISMISS
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                            </svg>
+                        </button>
                     </motion.div>
                 )}
             </AnimatePresence>

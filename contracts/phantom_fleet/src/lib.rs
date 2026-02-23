@@ -15,8 +15,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, vec, Address, Bytes, BytesN,
-    Env, IntoVal, InvokeError, String as SorobanString, Symbol, Val, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN,
+    Env, Vec,
 };
 
 // ─── Constants ─────────────────────────────────────────────
@@ -87,6 +87,9 @@ pub enum Error {
     CommitmentMismatch = 7,
     GameAlreadyFinished = 8,
     AlreadyCommitted = 9,
+    InvalidPublicInputs = 10,
+    VerificationKeyMissing = 11,
+    InvalidVerificationKey = 12,
 }
 
 // ─── Contract ──────────────────────────────────────────────
@@ -189,6 +192,8 @@ impl PhantomFleetContract {
 
     /// Commit a player's fleet layout (Poseidon hash).
     /// Both players must commit before the game becomes Active.
+    /// If player2 was initialized as a placeholder (same as player1),
+    /// the first OTHER address to commit will register as player2.
     pub fn commit_layout(env: Env, game_id: BytesN<32>, player: Address, commitment: BytesN<32>) {
         player.require_auth();
 
@@ -196,30 +201,39 @@ impl PhantomFleetContract {
             .storage()
             .persistent()
             .get(&DataKey::Game(game_id.clone()))
-            .unwrap_or_else(|| panic!("Game not found"));
+            .unwrap_or_else(|| env.panic_with_error(Error::GameNotFound));
 
         if state.status != GameStatus::WaitingForCommitments {
-            panic!("Game not in commitment phase");
+            env.panic_with_error(Error::InvalidStatus);
         }
 
         let empty = BytesN::from_array(&env, &[0u8; 32]);
 
+        // If player2 was set to the same address as player1 (placeholder),
+        // the first stranger to commit takes the player2 slot.
+        if state.player2 == state.player1 && player != state.player1 {
+            state.player2 = player.clone();
+        }
+
         if player == state.player1 {
             if state.p1_commitment != empty {
-                panic!("Player 1 already committed");
+                env.panic_with_error(Error::AlreadyCommitted);
             }
             state.p1_commitment = commitment.clone();
         } else if player == state.player2 {
             if state.p2_commitment != empty {
-                panic!("Player 2 already committed");
+                env.panic_with_error(Error::AlreadyCommitted);
             }
             state.p2_commitment = commitment.clone();
         } else {
-            panic!("Address is not a player in this game");
+            env.panic_with_error(Error::InvalidPlayer);
         }
 
-        // Check if both players have committed
-        if state.p1_commitment != empty && state.p2_commitment != empty {
+        // Both committed only when p1 != p2 (real two-player game)
+        let both_committed = state.p1_commitment != empty
+            && state.p2_commitment != empty
+            && state.player1 != state.player2;
+        if both_committed {
             state.status = GameStatus::Active;
             state.current_turn = state.player1.clone();
             state.turn_number = 1;
@@ -254,18 +268,18 @@ impl PhantomFleetContract {
             .storage()
             .persistent()
             .get(&DataKey::Game(game_id.clone()))
-            .unwrap_or_else(|| panic!("Game not found"));
+            .unwrap_or_else(|| env.panic_with_error(Error::GameNotFound));
 
         if state.status != GameStatus::Active {
-            panic!("Game is not active");
+            env.panic_with_error(Error::InvalidStatus);
         }
 
         if state.current_turn != shooter {
-            panic!("Not your turn");
+            env.panic_with_error(Error::NotYourTurn);
         }
 
         if target_x >= 6 || target_y >= 6 {
-            panic!("Target coordinates out of bounds (0-5)");
+            env.panic_with_error(Error::InvalidCoordinates);
         }
 
         // Determine defender and their commitment
@@ -277,20 +291,23 @@ impl PhantomFleetContract {
 
         // Verify that the first public input matches the defender's commitment.
         // public_inputs order: [commitment, target_x, target_y, min_dist, max_dist, is_hit]
-        if public_inputs.len() < 6 {
-            panic!("Insufficient public inputs (need 6)");
+        if public_inputs.len() != 6 {
+            env.panic_with_error(Error::InvalidPublicInputs);
         }
 
         let proof_commitment = public_inputs.get(0).unwrap();
+        if proof_commitment.len() != 32 {
+            env.panic_with_error(Error::InvalidPublicInputs);
+        }
         let commitment_bytes: BytesN<32> = BytesN::from_array(&env, &{
             let mut arr = [0u8; 32];
-            for k in 0..core::cmp::min(proof_commitment.len(), 32) {
+            for k in 0..32 {
                 arr[k as usize] = proof_commitment.get(k).unwrap();
             }
             arr
         });
         if commitment_bytes != defender_commitment {
-            panic!("Proof commitment does not match defender layout");
+            env.panic_with_error(Error::CommitmentMismatch);
         }
 
         // ─────────────────────────────────────────────────────
@@ -306,9 +323,16 @@ impl PhantomFleetContract {
         // prohibitive for a real-time game.
         // ─────────────────────────────────────────────────────
         let vk = Self::get_verification_key(&env);
-        let proof_valid = Self::verify_groth16_bn254(&env, &proof, &public_inputs, &vk);
-        if !proof_valid {
-            panic!("Invalid ZK proof — BN254 pairing check failed");
+        if vk.len() < 512 {
+            env.panic_with_error(Error::VerificationKeyMissing);
+        }
+        if proof.len() != 256 {
+            env.panic_with_error(Error::InvalidProof);
+        }
+
+        let proof_verified = Self::verify_groth16_bn254(&env, &proof, &public_inputs, &vk);
+        if !proof_verified {
+            env.panic_with_error(Error::InvalidProof);
         }
 
         // Parse verified public inputs (field elements, value in last byte for small numbers)
@@ -342,20 +366,9 @@ impl PhantomFleetContract {
             is_hit,
             proximity_min: min_dist,
             proximity_max: max_dist,
-            proof_verified: true,
+            proof_verified,
             tx_sequence: env.ledger().sequence(),
         };
-
-        // Append to shot history
-        let mut history: Vec<ShotResult> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::ShotHistory(game_id.clone()))
-            .unwrap_or_else(|| Vec::new(&env));
-        history.push_back(shot_result.clone());
-        env.storage()
-            .persistent()
-            .set(&DataKey::ShotHistory(game_id.clone()), &history);
 
         // Check win condition
         let p1_sunk = state.p1_hits_received >= TOTAL_SHIP_CELLS;
@@ -431,7 +444,7 @@ impl PhantomFleetContract {
         env.storage()
             .persistent()
             .get(&DataKey::Game(game_id))
-            .unwrap_or_else(|| panic!("Game not found"))
+            .unwrap_or_else(|| env.panic_with_error(Error::GameNotFound))
     }
 
     /// Get the full shot history for replay / verification.
@@ -454,9 +467,22 @@ impl PhantomFleetContract {
             .unwrap_or_else(|| Bytes::new(env))
     }
 
+    /// Check whether a verification key has been configured.
+    pub fn has_verification_key(env: Env) -> bool {
+        let vk: Bytes = env
+            .storage()
+            .persistent()
+            .get(&symbol_short!("vk"))
+            .unwrap_or_else(|| Bytes::new(&env));
+        vk.len() >= 512
+    }
+
     /// Store the verification key (called once during deployment).
     pub fn set_verification_key(env: Env, admin: Address, vk: Bytes) {
         admin.require_auth();
+        if vk.len() < 512 || ((vk.len() - 448) % 64 != 0) {
+            env.panic_with_error(Error::InvalidVerificationKey);
+        }
         env.storage().persistent().set(&symbol_short!("vk"), &vk);
     }
 

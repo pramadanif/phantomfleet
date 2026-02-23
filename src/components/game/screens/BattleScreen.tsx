@@ -3,7 +3,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useGame } from '../GameContext';
-import { getMerklePath, buildMerkleTree, findClosestShip } from '../../../utils/zkProof';
 import { callSubmitShot, EXPLORER_BASE } from '../../../utils/stellar';
 import {
     BOT_FLEET,
@@ -163,20 +162,12 @@ export function BattleScreen() {
                         }
                     };
 
-                    // Find actual closest ship using Chebyshev distance
-                    const closest = findClosestShip(shipGrid, targetX, targetY);
-                    const closestX = closest.x;
-                    const closestY = closest.y;
-
                     workerRef.current.postMessage({
                         type: 'GENERATE_PROOF',
                         witness: {
                             shipGrid,
-                            merklePath: [],
                             targetX,
                             targetY,
-                            closestShipX: closestX,
-                            closestShipY: closestY,
                             layoutNonce,
                         },
                     });
@@ -241,8 +232,21 @@ export function BattleScreen() {
                     }`}>
                     {colLabel && <div className="absolute -top-5 left-1/2 -translate-x-1/2 font-mono text-[0.6rem] text-haze-gray">{colLabel}</div>}
                     {rowLabel && <div className="absolute -left-5 top-1/2 -translate-y-1/2 font-mono text-[0.6rem] text-haze-gray">{rowLabel}</div>}
-                    {hitState === 'HIT' && <div className="absolute inset-0 flex items-center justify-center text-signal-red font-bold text-lg" style={{ filter: 'drop-shadow(0 0 8px rgba(192,57,43,0.8))' }}>✕</div>}
-                    {hitState === 'MISS' && <div className="absolute inset-0 flex items-center justify-center text-haze-gray font-bold">●</div>}
+                    {hitState === 'HIT' && (
+                        <div className="absolute inset-0 flex items-center justify-center text-signal-red" style={{ filter: 'drop-shadow(0 0 8px rgba(192,57,43,0.8))' }}>
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                            </svg>
+                        </div>
+                    )}
+                    {hitState === 'MISS' && (
+                        <div className="absolute inset-0 flex items-center justify-center text-haze-gray">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                                <circle cx="12" cy="12" r="8"></circle>
+                            </svg>
+                        </div>
+                    )}
                 </div>
             );
         }
@@ -288,14 +292,29 @@ export function BattleScreen() {
                                     />
                                 ));
                             })()}
-                            <div className="absolute inset-0 flex items-center justify-center font-bold" style={{
+                            <div className="absolute inset-0 flex items-center justify-center" style={{
                                 color: enemyCellDist[i] !== undefined && enemyCellDist[i] <= 2 ? '#FF6B35' : enemyCellDist[i] !== undefined && enemyCellDist[i] <= 4 ? '#FFC107' : '#6495ED'
-                            }}>●</div>
+                            }}>
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                                    <circle cx="12" cy="12" r="8"></circle>
+                                </svg>
+                            </div>
                         </>
                     )}
-                    {state === 'HIT' && <div className="absolute inset-0 flex items-center justify-center text-signal-red font-bold text-xl" style={{ filter: 'drop-shadow(0 0 8px rgba(192,57,43,0.8))' }}>✕</div>}
+                    {state === 'HIT' && (
+                        <div className="absolute inset-0 flex items-center justify-center text-signal-red" style={{ filter: 'drop-shadow(0 0 8px rgba(192,57,43,0.8))' }}>
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                            </svg>
+                        </div>
+                    )}
                     {isGenerating && (
-                        <motion.div initial={{ opacity: 0 }} animate={{ opacity: [0.5, 1, 0.5] }} transition={{ duration: 1.2, repeat: Infinity }} className="absolute inset-0 flex items-center justify-center text-radar font-bold text-sm">⚡</motion.div>
+                        <motion.div initial={{ opacity: 0 }} animate={{ opacity: [0.5, 1, 0.5] }} transition={{ duration: 1.2, repeat: Infinity }} className="absolute inset-0 flex items-center justify-center text-radar font-bold">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                            </svg>
+                        </motion.div>
                     )}
                 </div>
             );
@@ -334,21 +353,21 @@ export function BattleScreen() {
                 </div>
 
                 {/* GRIDS */}
-                <div className="grid grid-cols-1 lg:grid-cols-[auto_1fr] flex-1 gap-8 lg:gap-16 overflow-hidden pt-4 pb-12">
+                <div className="flex flex-col lg:flex-row justify-center items-start flex-1 gap-12 lg:gap-32 pt-12 pb-12 w-full">
 
-                    <div className="flex flex-col lg:pl-4">
-                        <h2 className="font-mono text-brass tracking-widest text-sm mb-8 bg-hull inline-block border-l-2 border-brass px-3 py-1 self-start">YOUR WATERS</h2>
-                        <div className="grid grid-cols-6 gap-0 border border-ocean-gray bg-abyss p-[1px] self-start ml-4 opacity-80">
+                    <div className="flex flex-col items-center lg:items-end">
+                        <h2 className="font-mono text-brass tracking-widest text-sm mb-8 bg-hull inline-block border-r-2 border-brass px-3 py-1">YOUR WATERS</h2>
+                        <div className="grid grid-cols-6 gap-0 border border-ocean-gray bg-abyss p-[1px] opacity-80 shadow-[0_0_30px_rgba(0,0,0,0.5)]">
                             {renderYourWaters()}
                         </div>
                     </div>
 
-                    <div className="flex flex-col items-center">
-                        <h2 className="font-mono text-haze-gray tracking-widest text-sm mb-8 bg-hull inline-block border-l-2 border-ocean-gray px-3 py-1 self-center lg:self-start">
+                    <div className="flex flex-col items-center lg:items-start">
+                        <h2 className="font-mono text-haze-gray tracking-widest text-sm mb-8 bg-hull inline-block border-l-2 border-ocean-gray px-3 py-1">
                             {isBotGame ? 'PHANTOM AI WATERS' : 'ENEMY WATERS'}
                         </h2>
 
-                        <div className="grid grid-cols-6 gap-0 border border-ocean-gray bg-abyss p-[1px] self-center lg:self-start lg:ml-6 mb-8 relative">
+                        <div className="grid grid-cols-6 gap-0 border border-ocean-gray bg-abyss p-[1px] mb-8 relative shadow-[0_0_40px_rgba(0,0,0,0.6)]">
                             {renderEnemyWaters()}
 
                             <AnimatePresence>
@@ -357,11 +376,15 @@ export function BattleScreen() {
                                         initial={{ opacity: 0, y: 20 }}
                                         animate={{ opacity: 1, y: 0 }}
                                         exit={{ opacity: 0, y: 10 }}
-                                        className="absolute bottom-[-100px] right-0 w-[340px] bg-hull border border-brass p-4 z-10"
+                                        className="absolute bottom-[-100px] left-1/2 -translate-x-1/2 w-[340px] bg-hull border border-brass p-4 z-10"
                                         style={{ boxShadow: '0 4px 24px rgba(0,0,0,0.5)' }}
                                     >
                                         <div className="flex items-center gap-2 mb-2">
-                                            <motion.span animate={{ opacity: [1, 0.3, 1] }} transition={{ duration: 0.8, repeat: Infinity }} className="text-radar font-bold">⚡</motion.span>
+                                            <motion.div animate={{ opacity: [1, 0.3, 1] }} transition={{ duration: 0.8, repeat: Infinity }} className="text-radar">
+                                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                                                </svg>
+                                            </motion.div>
                                             <span className="font-mono text-smoke text-sm">GENERATING ZK PROOF</span>
                                         </div>
                                         <div className="font-mono text-haze-gray text-[0.65rem] mb-3">Noir circuit · BN254 · Groth16</div>
@@ -380,7 +403,7 @@ export function BattleScreen() {
                         </div>
 
                         {/* PROXIMITY PANEL */}
-                        <div className="h-[130px] w-full flex justify-center lg:justify-start lg:ml-6">
+                        <div className="h-[130px] w-full flex justify-center lg:justify-start">
                             <AnimatePresence>
                                 {lastMissInfo && (
                                     <motion.div
@@ -388,16 +411,34 @@ export function BattleScreen() {
                                         animate={{ opacity: 1, y: 0 }}
                                         exit={{ opacity: 0, y: 20 }}
                                         key={lastMissInfo.cell}
-                                        className="bg-hull border-l-4 border-radar p-4 min-w-[320px]"
+                                        className="bg-hull border-l-4 border-radar p-4 min-w-[340px]"
                                         style={{ boxShadow: '-8px 0 16px -8px rgba(61,255,110,0.3)' }}
                                     >
-                                        <div className="font-mono text-[0.7rem] text-smoke mb-2 tracking-widest">◉ PROXIMITY REPORT — {lastMissInfo.cell}</div>
+                                        <div className="font-mono text-[0.7rem] text-smoke mb-2 tracking-widest flex items-center gap-2">
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-radar">
+                                                <circle cx="12" cy="12" r="10"></circle>
+                                                <circle cx="12" cy="12" r="4"></circle>
+                                                <line x1="12" y1="2" x2="12" y2="4"></line>
+                                                <line x1="12" y1="20" x2="12" y2="22"></line>
+                                                <line x1="2" y1="12" x2="4" y2="12"></line>
+                                                <line x1="20" y1="12" x2="22" y2="12"></line>
+                                            </svg>
+                                            PROXIMITY REPORT — {lastMissInfo.cell}
+                                        </div>
                                         <div className="w-full border-b border-ocean-gray mb-3"></div>
-                                        <div className="font-mono text-sm text-radar tracking-widest flex items-center gap-3 mb-2">
-                                            <span className="opacity-80">
-                                                {lastMissInfo.distance === 'HOT' ? '[●●●●●●░░░░]' : lastMissInfo.distance === 'WARM' ? '[●●●░░░░░░░]' : '[●░░░░░░░░░]'}
+                                        <div className="font-mono text-sm tracking-widest flex items-center gap-4 mb-2">
+                                            <div className="flex gap-1">
+                                                {Array.from({ length: 10 }).map((_, i) => {
+                                                    const activeBlocks = lastMissInfo.distance === 'HOT' ? 6 : lastMissInfo.distance === 'WARM' ? 3 : 1;
+                                                    const colorClass = lastMissInfo.distance === 'HOT' ? 'bg-[#FF6B35]' : lastMissInfo.distance === 'WARM' ? 'bg-[#FFC107]' : 'bg-[#6495ED]';
+                                                    return (
+                                                        <div key={i} className={`w-2 h-4 ${i < activeBlocks ? colorClass : 'bg-ocean-gray/30'} border border-abyss border-[0.5px]`}></div>
+                                                    );
+                                                })}
+                                            </div>
+                                            <span style={{ color: lastMissInfo.distance === 'HOT' ? '#FF6B35' : lastMissInfo.distance === 'WARM' ? '#FFC107' : '#6495ED' }}>
+                                                {lastMissInfo.distance === 'HOT' ? 'VERY HOT — 1-2 CELLS' : lastMissInfo.distance === 'WARM' ? 'WARM — 3-4 CELLS' : 'COLD — 5-6 CELLS'}
                                             </span>
-                                            <span>{lastMissInfo.distance === 'HOT' ? 'VERY HOT — 1-2 CELLS' : lastMissInfo.distance === 'WARM' ? 'WARM — 3-4 CELLS' : 'COLD — 5-6 CELLS'}</span>
                                         </div>
                                         <a
                                             href={`${EXPLORER_BASE}${lastMissInfo.txHash}`}

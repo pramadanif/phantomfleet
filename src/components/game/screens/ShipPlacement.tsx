@@ -4,7 +4,7 @@ import { useState, useCallback } from 'react';
 import { motion } from 'motion/react';
 import { useGame } from '../GameContext';
 import { buildMerkleTree, computeCommitment } from '../../../utils/zkProof';
-import { callCommitLayout, EXPLORER_BASE } from '../../../utils/stellar';
+import { callCommitLayout, callGetGameState, callHasVerificationKey, EXPLORER_BASE } from '../../../utils/stellar';
 import { soundEngine } from '../../../utils/soundEngine';
 
 type ShipType = 'CARRIER' | 'CRUISER' | 'DESTROYER' | 'SCOUT';
@@ -36,6 +36,20 @@ export function ShipPlacement() {
     const [isSealing, setIsSealing] = useState(false);
     const [sealedTx, setSealedTx] = useState<string | null>(null);
     const [sealStatus, setSealStatus] = useState<string>('');
+
+    const waitForGameActive = async (callerAddress: string, gameIdValue: string) => {
+        const timeoutMs = 5 * 60 * 1000;
+        const pollMs = 2500;
+        const started = Date.now();
+
+        while (Date.now() - started < timeoutMs) {
+            const state = await callGetGameState(callerAddress, gameIdValue);
+            if (state.status === 'Active') return;
+            await new Promise((resolve) => setTimeout(resolve, pollMs));
+        }
+
+        throw new Error('Opponent has not sealed fleet yet. Please wait and try again.');
+    };
 
     const getHoverCells = useCallback((startIndex: number, size: number, ori: Orientation) => {
         const row = Math.floor(startIndex / 6);
@@ -118,18 +132,30 @@ export function ShipPlacement() {
                     setScreen('BATTLE');
                 }, 1500);
             } else {
+                if (!wallet?.address || !gameId) {
+                    throw new Error('Wallet or game session missing');
+                }
+
+                setSealStatus('VERIFYING PROTOCOL 25 SETUP...');
+                const hasVk = await callHasVerificationKey(wallet.address);
+                if (!hasVk) {
+                    throw new Error('Verification key is not configured on-chain. Run scripts/set_vk.sh first.');
+                }
+
                 // PvP: submit commitment on-chain via Soroban
                 setSealStatus('SUBMITTING TO STELLAR...');
-                const txResult = await callCommitLayout(wallet?.address || '', gameId || '', commitment);
+                const txResult = await callCommitLayout(wallet.address, gameId, commitment);
 
                 setLastTx(txResult);
                 setSealedTx(txResult.txHash);
-                setSealStatus('');
+                setSealStatus('AWAITING OPPONENT COMMITMENT...');
 
-                // Wait for opponent, then navigate
+                await waitForGameActive(wallet.address, gameId);
+                setSealStatus('BOTH FLEETS SEALED. ENTERING BATTLE...');
+
                 setTimeout(() => {
                     setScreen('BATTLE');
-                }, 2500);
+                }, 1200);
             }
         } catch (err: any) {
             setGlobalError('Fleet sealing failed: ' + (err.message || 'Unknown error'));
@@ -236,7 +262,13 @@ export function ShipPlacement() {
                                                 ))}
                                             </div>
                                         </div>
-                                        {isPlaced && <div className="text-deck-green text-xl font-bold">●</div>}
+                                        {isPlaced && (
+                                            <div className="text-deck-green">
+                                                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                                                    <circle cx="12" cy="12" r="8"></circle>
+                                                </svg>
+                                            </div>
+                                        )}
                                     </button>
                                 );
                             })}

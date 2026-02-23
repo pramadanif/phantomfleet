@@ -25,10 +25,14 @@ export function GameLobby() {
     const handleCreateGame = async () => {
         setIsDeploying(true);
         try {
-            const result = await callStartGame(walletAddress, walletAddress);
-            setCreatedGameId(result.gameId);
+            // Generate a very short, shareable game ID
+            const newGameId = 'GAME-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+            // For game creation, player1 = creator, player2 = creator (placeholder).
+            // The real opponent joins by committing their layout with the same game_id.
+            const result = await callStartGame(walletAddress, walletAddress, walletAddress, newGameId);
+            setCreatedGameId(newGameId);
             setDeployTx(result.txHash);
-            setGameId(result.gameId);
+            setGameId(newGameId);
         } catch (err: any) {
             setGlobalError('Failed to deploy game: ' + (err.message || 'Unknown error'));
         } finally {
@@ -82,7 +86,10 @@ export function GameLobby() {
                             className="bg-brass text-abyss font-sans font-bold text-xl tracking-wider py-5 px-12 hover:brightness-110 transition-all whitespace-nowrap"
                             style={{ boxShadow: '0 4px 16px rgba(184,150,46,0.3)' }}
                         >
-                            ⚡ PLAY VS BOT
+                            <svg className="w-4 h-4 mr-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                            </svg>
+                            PLAY VS BOT
                         </button>
                     </div>
                 </motion.div>

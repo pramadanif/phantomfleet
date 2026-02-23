@@ -1,8 +1,5 @@
 /**
- * Web Worker for ZK Proof Generation
- * 
- * Runs Noir circuit proving off the main thread.
- * Uses @noir-lang/noir_js + Barretenberg backend for real proof generation.
+ * Web Worker for ZK Proof Generation (Circom + SnarkJS)
  *
  * Messages:
  *   IN:  { type: 'GENERATE_PROOF', witness: ShotWitness }
@@ -16,15 +13,17 @@ import { buildPoseidon } from 'circomlibjs';
 
 interface ShotWitness {
     shipGrid: number[];
-    merklePath: string[];
     targetX: number;
     targetY: number;
-    closestShipX: number;
-    closestShipY: number;
     layoutNonce: string;
 }
 
-// ── Real Poseidon BN254 ────────────────────────────────────
+interface ZKProof {
+    proof: string; // base64, raw 256-byte Groth16 proof
+    publicInputs: string[];
+}
+
+// ── Poseidon BN254 ───────────────────────────────────────
 
 let poseidonInstance: any = null;
 
@@ -35,124 +34,116 @@ async function getPoseidon() {
     return poseidonInstance;
 }
 
-async function poseidonHash(...inputs: (string | number | bigint)[]): Promise<string> {
+async function poseidonHashDec(...inputs: (string | number | bigint)[]): Promise<string> {
     const poseidon = await getPoseidon();
     const F = poseidon.F;
-    const inputElements = inputs.map(x => F.e(BigInt(x)));
-    const hash = poseidon(inputElements);
-    return '0x' + F.toString(hash, 16).padStart(64, '0');
+    const prepared = inputs.map((value) => F.e(BigInt(value)));
+    const hash = poseidon(prepared);
+    return F.toString(hash);
 }
 
-async function computeCommitmentInWorker(grid: number[], nonce: string): Promise<string> {
-    const chunk1 = await poseidonHash(...grid.slice(0, 15));
-    const chunk2 = await poseidonHash(...grid.slice(15, 30));
-    const chunk3 = await poseidonHash(...grid.slice(30, 36), 0);
-    const gridHash = await poseidonHash(chunk1, chunk2, chunk3);
-    return poseidonHash(gridHash, nonce);
+async function computeCommitmentDec(grid: number[], nonce: string): Promise<string> {
+    const chunk1 = await poseidonHashDec(...grid.slice(0, 15));
+    const chunk2 = await poseidonHashDec(...grid.slice(15, 30));
+    const chunk3 = await poseidonHashDec(...grid.slice(30, 36), 0);
+    const gridHash = await poseidonHashDec(chunk1, chunk2, chunk3);
+    return poseidonHashDec(gridHash, nonce);
+}
+
+// ── Encoding helpers (must match successful E2E variant) ──────────
+
+function fieldToHex32(value: string | number | bigint): string {
+    return BigInt(value).toString(16).padStart(64, '0').slice(-64);
+}
+
+function g1ToHex(point: [string, string]): string {
+    return fieldToHex32(point[0]) + fieldToHex32(point[1]);
+}
+
+function g2ToHexSwapFq2(point: [[string, string], [string, string]]): string {
+    const x0 = point[0][1];
+    const x1 = point[0][0];
+    const y0 = point[1][1];
+    const y1 = point[1][0];
+    return fieldToHex32(x0) + fieldToHex32(x1) + fieldToHex32(y0) + fieldToHex32(y1);
+}
+
+function proofToHex256(proofJson: any): string {
+    const a = g1ToHex([proofJson.pi_a[0], proofJson.pi_a[1]]);
+    const b = g2ToHexSwapFq2([
+        [proofJson.pi_b[0][0], proofJson.pi_b[0][1]],
+        [proofJson.pi_b[1][0], proofJson.pi_b[1][1]],
+    ]);
+    const c = g1ToHex([proofJson.pi_c[0], proofJson.pi_c[1]]);
+    const hex = a + b + c;
+    if (hex.length !== 512) {
+        throw new Error(`Invalid proof size: expected 512 hex chars, got ${hex.length}`);
+    }
+    return hex;
+}
+
+function hexToBase64(hex: string): string {
+    const pairs = hex.match(/.{1,2}/g) || [];
+    const bytes = new Uint8Array(pairs.map((pair) => parseInt(pair, 16)));
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
 }
 
 // ── Proof Generation ───────────────────────────────────────
 
-async function generateProofInWorker(witness: ShotWitness) {
+async function generateProofInWorker(witness: ShotWitness): Promise<ZKProof> {
     self.postMessage({ type: 'PROOF_PROGRESS', percent: 5 });
 
-    // Compute derived values
     const targetIndex = witness.targetY * 6 + witness.targetX;
     const isHit = witness.shipGrid[targetIndex] === 1;
-    let minDist = 0;
-    let maxDist = 0;
+    const minDist = 0;
+    const maxDist = 0;
 
-    if (!isHit) {
-        let closestDist = Infinity;
-        for (let i = 0; i < 36; i++) {
-            if (witness.shipGrid[i] !== 1) continue;
-            const dist = Math.max(
-                Math.abs(witness.targetX - (i % 6)),
-                Math.abs(witness.targetY - Math.floor(i / 6))
-            );
-            if (dist < closestDist) closestDist = dist;
-        }
-        minDist = closestDist;
-        maxDist = closestDist;
+    const commitmentDec = await computeCommitmentDec(witness.shipGrid, witness.layoutNonce);
+
+    self.postMessage({ type: 'PROOF_PROGRESS', percent: 25 });
+
+    const input = {
+        ship_grid: witness.shipGrid,
+        layout_nonce: witness.layoutNonce,
+        target_x: witness.targetX,
+        target_y: witness.targetY,
+        layout_commitment: commitmentDec,
+        min_dist: minDist,
+        max_dist: maxDist,
+        is_hit: isHit ? 1 : 0,
+    };
+
+    const snarkjs = await import('snarkjs');
+
+    self.postMessage({ type: 'PROOF_PROGRESS', percent: 45 });
+
+    const wasmUrl = '/circuits/circom/phantom_fleet.wasm';
+    const zkeyUrl = '/circuits/circom/circuit_final.zkey';
+
+    const { proof, publicSignals } = await snarkjs.groth16.fullProve(input, wasmUrl, zkeyUrl);
+
+    self.postMessage({ type: 'PROOF_PROGRESS', percent: 80 });
+
+    if (!Array.isArray(publicSignals) || publicSignals.length !== 6) {
+        throw new Error(`Unexpected public signal length: ${publicSignals?.length ?? 'unknown'}`);
     }
 
-    self.postMessage({ type: 'PROOF_PROGRESS', percent: 15 });
-
-    const commitment = await computeCommitmentInWorker(witness.shipGrid, witness.layoutNonce);
-    self.postMessage({ type: 'PROOF_PROGRESS', percent: 30 });
-
-    // Attempt real Noir proof generation
-    let proofBase64: string;
-    try {
-        const { Noir } = await import('@noir-lang/noir_js');
-        const { BarretenbergBackend } = await import('@noir-lang/backend_barretenberg');
-
-        self.postMessage({ type: 'PROOF_PROGRESS', percent: 40 });
-
-        const circuitResponse = await fetch('/circuits/phantom_fleet.json');
-        const circuit = await circuitResponse.json();
-
-        self.postMessage({ type: 'PROOF_PROGRESS', percent: 50 });
-
-        const backend = new BarretenbergBackend(circuit);
-        const noir = new Noir(circuit);
-
-        self.postMessage({ type: 'PROOF_PROGRESS', percent: 60 });
-
-        const circuitInputs = {
-            ship_grid: witness.shipGrid.map(String),
-            merkle_path: witness.merklePath.map(s => [s, '0']),
-            closest_ship_x: String(witness.closestShipX),
-            closest_ship_y: String(witness.closestShipY),
-            layout_nonce: '0x' + BigInt(witness.layoutNonce).toString(16).padStart(64, '0'),
-            target_x: String(witness.targetX),
-            target_y: String(witness.targetY),
-            layout_commitment: commitment,
-            min_dist: String(minDist),
-            max_dist: String(maxDist),
-            is_hit: isHit ? '1' : '0',
-        };
-
-        self.postMessage({ type: 'PROOF_PROGRESS', percent: 70 });
-
-        const { witness: noirWitness } = await noir.execute(circuitInputs);
-        const proof = await backend.generateProof(noirWitness);
-        const arr = Array.from(proof.proof);
-        proofBase64 = btoa(arr.map(b => String.fromCharCode(b)).join(''));
-
-        self.postMessage({ type: 'PROOF_PROGRESS', percent: 95 });
-        await backend.destroy();
-    } catch (e) {
-        // Graceful fallback: circuit not compiled yet — generate crypto proof
-        console.warn('[Worker] Noir circuit not available, using crypto fallback:', e);
-        self.postMessage({ type: 'PROOF_PROGRESS', percent: 50 });
-
-        const data = new TextEncoder().encode(commitment + Date.now());
-        const hash = await crypto.subtle.digest('SHA-256', data);
-        const proofBytes = new Uint8Array(256);
-        const hashBytes = new Uint8Array(hash);
-        for (let i = 0; i < 256; i++) proofBytes[i] = hashBytes[i % 32];
-        proofBase64 = btoa(Array.from(proofBytes).map(b => String.fromCharCode(b)).join(''));
-
-        // Progress simulation for the crypto path
-        for (let p = 60; p <= 95; p += 5) {
-            self.postMessage({ type: 'PROOF_PROGRESS', percent: p });
-            await new Promise(r => setTimeout(r, 200));
-        }
+    if (BigInt(publicSignals[0]) !== BigInt(commitmentDec)) {
+        throw new Error('Public signal commitment mismatch.');
     }
+
+    const proofHex = proofToHex256(proof);
+    const proofBase64 = hexToBase64(proofHex);
 
     self.postMessage({ type: 'PROOF_PROGRESS', percent: 100 });
 
     return {
         proof: proofBase64,
-        publicInputs: [
-            commitment,
-            witness.targetX.toString(),
-            witness.targetY.toString(),
-            minDist.toString(),
-            maxDist.toString(),
-            isHit ? '1' : '0',
-        ],
+        publicInputs: publicSignals.map((x: any) => String(x)),
     };
 }
 
@@ -161,10 +152,10 @@ self.onmessage = async (e: MessageEvent) => {
 
     if (type === 'GENERATE_PROOF') {
         try {
-            const result = await generateProofInWorker(witness);
+            const result = await generateProofInWorker(witness as ShotWitness);
             self.postMessage({ type: 'PROOF_READY', proof: result });
         } catch (err: any) {
-            self.postMessage({ type: 'PROOF_ERROR', error: err.message || 'Unknown error' });
+            self.postMessage({ type: 'PROOF_ERROR', error: err?.message || 'Unknown error' });
         }
     }
 };

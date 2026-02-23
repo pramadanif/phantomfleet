@@ -245,7 +245,7 @@ fn test_hit_scenario() {
 #[test]
 fn test_bounds_check() {
     let grid = [0 as Field; 36];
-    let nonce: Field = 99999;
+
     let _grid_hash = hash_grid(grid);
 
     // Valid coordinates should pass bounds
