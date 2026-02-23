@@ -23,7 +23,7 @@
 
 ## Play Now
 
-🎮 **[Play on Testnet →](https://phantomfleet.xyz/game)** (requires [Freighter wallet](https://freighter.app) configured for Stellar Testnet)
+🎮 **[Play on Testnet →](https://phantomfleet.vercel.app/game)** (requires [Freighter wallet](https://freighter.app) configured for Stellar Testnet)
 
 > ⚠️ This game runs on **Stellar Testnet** — no real XLM is used. Fund your wallet at [friendbot.stellar.org](https://friendbot.stellar.org).
 
