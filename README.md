@@ -53,6 +53,7 @@
    - [8.2 Public Functions](#82-public-functions)
    - [8.3 Error Codes](#83-error-codes)
    - [8.4 On-Chain Groth16 Verification](#84-on-chain-groth16-verification)
+   - [8.5 Game Hub Integration](#85-game-hub-integration)
 9. [Frontend Architecture](#9-frontend-architecture)
    - [9.1 Component Tree](#91-component-tree)
    - [9.2 Game State Machine](#92-game-state-machine)
@@ -738,6 +739,162 @@ fn verify_groth16_bn254(env: &Env, proof: &Bytes, public_inputs: &Vec<Bytes>, vk
     let g2_vec = vec![proof_b, vk_beta, vk_gamma, vk_delta];
     bn254.pairing_check(g1_vec, g2_vec)  // single Protocol 25 host call
 }
+```
+
+### 8.5 Game Hub Integration
+
+The Phantom Fleet contract integrates with a **Game Hub contract** (a hackathon requirement for centralized game tracking and statistics). This integration is achieved via **cross-contract invocation** — the Phantom Fleet contract calls functions on the Game Hub contract at key moments in the game lifecycle.
+
+**Game Hub Contract Address (Testnet)**: `CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG`
+
+**Why Game Hub?**
+- Centralized **tournament tracking** and **leaderboard management** for hackathon evaluation
+- Records game outcomes (winner, loser, timestamp)
+- Optionally tracks player statistics (win/loss ratio, total games)
+- Enables a global game registry referenced across multiple versions/deployments
+- Out-of-contract solution: Phantom Fleet game logic is completely independent; hub integration is purely bookkeeping
+
+#### 8.5.1 Cross-Contract Call: `start_game()`
+
+**When**: Immediately when `initialize_game()` is called by player 1
+
+**Function signature** (in Game Hub):
+```
+start_game(game_address: Address, session_id: u32, player1: Address, player2: Address, player1_score: i128, player2_score: i128)
+```
+
+**Source in Phantom Fleet** (lines 758-780 of [`lib.rs`](https://github.com/pramadanif/phantomfleet/blob/main/contracts/phantom_fleet/src/lib.rs)):
+
+```rust
+fn hub_start_game(env: &Env, session_id: u32, player1: Address, player2: Address) {
+    let hub_address = Address::from_string(&soroban_sdk::String::from_str(env, GAME_HUB_ADDRESS));
+    let self_address = env.current_contract_address();
+    let zero_points: i128 = 0;
+    let args: Vec<Val> = vec![
+        env,
+        self_address.into_val(env),           // game_address: this contract
+        session_id.into_val(env),             // session_id: from ledger sequence
+        player1.into_val(env),                // player1
+        player2.into_val(env),                // player2
+        zero_points.into_val(env),            // player1_score (initially 0)
+        zero_points.into_val(env),            // player2_score (initially 0)
+    ];
+    
+    env.invoke_contract::<()>(
+        &hub_address,
+        &Symbol::new(env, "start_game"),
+        args,
+    );
+}
+```
+
+**What happens**:
+1. **Session ID generation**: Uses the Stellar `ledger.sequence()` number as a unique session ID across all games
+2. **Hub registration**: Game Hub records that this game has started with both players
+3. **Initial scores**: Both players start with 0 points in the hub's tracking system
+4. **No authentication needed from hub**: Phantom Fleet is trusted to report accurate game state (trustless design)
+
+#### 8.5.2 Cross-Contract Call: `end_game()`
+
+**When**: When game finishes (one player reaches 11 hits = sinks all opponent ships)
+
+**Function signature** (in Game Hub):
+```
+end_game(session_id: u32, player1_won: bool)
+```
+
+**Source in Phantom Fleet** (lines 783-799 of [`lib.rs`](https://github.com/pramadanif/phantomfleet/blob/main/contracts/phantom_fleet/src/lib.rs)):
+
+```rust
+fn hub_end_game(env: &Env, session_id: u32, player1_won: bool) {
+    let hub_address = Address::from_string(&soroban_sdk::String::from_str(env, GAME_HUB_ADDRESS));
+    let args: Vec<Val> = vec![
+        env,
+        session_id.into_val(env),             // session_id: matches start_game
+        player1_won.into_val(env),            // true if player1 won, false if player2 won
+    ];
+    
+    env.invoke_contract::<()>(
+        &hub_address,
+        &Symbol::new(env, "end_game"),
+        args,
+    );
+}
+```
+
+**Calling locations**:
+- **Line 444**: When player 1 reaches 11 hits during `resolve_shot()` (defender resolves a shot that sinks their last ship)
+- **Line 619**: When player 2 reaches 11 hits during `resolve_shot()`
+
+**What happens**:
+1. **Game completion recorded**: Hub marks the game session as finished
+2. **Winner tracked**: Hub records which player won (`player1_won = true/false`)
+3. **Leaderboard update**: Hub updates player statistics (win count, loss count, etc.)
+4. **Game registry**: Hub maintains a searchable history of all games and their outcomes
+
+#### 8.5.3 Session ID: Linking Phantom Fleet to Hub
+
+The **session ID** is the link between the Phantom Fleet contract and the Game Hub:
+
+```rust
+// In initialize_game()
+let sequence = env.ledger().sequence();
+let session_id: u32 = sequence;
+Self::hub_start_game(&env, session_id, player1.clone(), player2.clone());
+```
+
+**Why use ledger sequence?**
+- ✅ Unique per Phantom Fleet transaction
+- ✅ Globally ordered across all operations
+- ✅ Deterministic and reproducible
+- ✅ No need for a separate ID generator or nonce system
+
+**Data stored in Phantom Fleet GameState**:
+```rust
+pub struct GameState {
+    ...
+    pub session_id: u32,  // Ledger sequence at game creation time
+}
+```
+
+When `end_game()` is called, this same `session_id` is passed to the hub to correlate the start and end events.
+
+#### 8.5.4 Cross-Contract Security Model
+
+**Trust assumptions**:
+- **Phantom Fleet trusts Game Hub** to correctly record game outcomes (no verification needed)
+- **Game Hub trusts Phantom Fleet** to only call `end_game()` when a game legitimately finishes (ZK proofs verify game honesty)
+- **Hub does NOT verify** Phantom Fleet's claim about who won — it accepts whatever Phantom Fleet reports
+
+**Why this is acceptable**:
+- Phantom Fleet itself uses **ZK proofs verified on-chain** to ensure game honesty
+- If a player could cheat in Phantom Fleet, the game would never reach `Finished` status (proofs would fail)
+- Therefore, by the time `end_game()` is called, the winner is already cryptographically guaranteed
+- Hub's job is only bookkeeping, not evaluation
+
+#### 8.5.5 Mermaid: Game Lifecycle Flow
+
+```mermaid
+sequenceDiagram
+    participant Player1 as Player 1
+    participant PF as Phantom Fleet<br/>Contract
+    participant Hub as Game Hub<br/>Contract
+    
+    Player1->>PF: initialize_game(player1, player2)
+    PF->>PF: session_id = ledger.sequence()
+    PF->>Hub: start_game(self, session_id, p1, p2, 0, 0)
+    Hub->>Hub: Record: game started
+    
+    Note over Player1,Hub: [Turn-by-turn combat...]
+    Note over Player1,Hub: [Fire, resolve, hit counter increments...]
+    
+    alt Player 1 Wins
+        PF->>Hub: end_game(session_id, true)
+    else Player 2 Wins
+        PF->>Hub: end_game(session_id, false)
+    end
+    
+    Hub->>Hub: Update leaderboard + stats
 ```
 
 ---
