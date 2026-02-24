@@ -44,7 +44,7 @@ export function MechanicCards() {
         </div>
         <h3 className="font-sans font-bold text-chalk text-[1.1rem] uppercase tracking-wider mb-2">PROVE</h3>
         <p className="font-sans text-smoke text-[0.95rem] leading-[1.6]">
-          A Noir circuit generates a ZK proof in your browser. Hit or miss — plus a proximity range. Never the exact position.
+          A Circom circuit generates a ZK proof in your browser. Hit or miss — plus a proximity range. Never the exact position.
         </p>
       </motion.div>
 

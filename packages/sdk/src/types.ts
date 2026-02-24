@@ -23,7 +23,7 @@ export interface ShotWitness {
     layoutNonce: bigint;                  // Nonce used in Poseidon commitment
 }
 
-/** Groth16 proof output from the Noir prover. */
+/** Groth16 proof output from the Circom prover. */
 export interface ShotProof {
     proof: Uint8Array;                    // Groth16 proof bytes (256 bytes)
     publicInputs: string[];              // Ordered field elements:
